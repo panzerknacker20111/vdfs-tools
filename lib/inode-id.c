@@ -72,9 +72,9 @@ u_int64_t get_free_inode_n(struct vdfs4_sb_info *sbi, int count)
 	return result;
 }
 
-u_int64_t test_and_clear_inode_n(struct vdfs4_sb_info *sbi, __u64 ino_n)
+int test_and_clear_inode_n(struct vdfs4_sb_info *sbi, __u64 ino_n)
 {
-	u_int64_t ret = 0;
+	int ret = 0;
 	ret = util_sign_test_bit(sbi->inode_bitmap.buffer,
 			sbi->inode_bitmap.buffer_size, ino_n,
 			sbi->block_size, INODE_BITMAP_MAGIC_LEN, CRC32_SIZE);
@@ -117,16 +117,25 @@ void inode_bitmap_count_crc(struct vdfs4_sb_info *sbi)
 	}
 }
 
+static u_int64_t get_inode_bitmap_size(struct vdfs4_sb_info *sbi)
+{
+	u_int64_t bitmap_bytes_per_block = sbi->block_size - INODE_BITMAP_MAGIC_LEN - CRC32_SIZE;
+	u_int64_t bitmap_bytes_needed = ALIGN(sbi->last_allocated_inode_number + 1, 8) >> 3;
+	u_int64_t blocks_needed = bitmap_bytes_needed / bitmap_bytes_per_block;
+	if(bitmap_bytes_needed % bitmap_bytes_per_block)
+		blocks_needed++;
+
+	return block_to_byte(blocks_needed, (u_int32_t)sbi->block_size);
+}
+
 
 int fill_inode_bitmap(struct vdfs4_sb_info *sbi)
 {
 	int ret = 0;
+	u_int64_t inode_bitmap_size =
+			get_inode_bitmap_size(sbi);
 	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE))
 		return ret;
-	u_int64_t block_size = GET_SIGNED_BLOCK_SIZE(sbi);
-	u_int64_t inode_bitmap_size = block_to_byte(byte_to_block(
-			ALIGN(sbi->last_allocated_inode_number, 8) >> 3,
-			block_size), sbi->block_size);
 	sbi->inode_bitmap.buffer = malloc(inode_bitmap_size);
 	if (!sbi->inode_bitmap.buffer)
 		return -ENOMEM;

@@ -19,15 +19,8 @@
  * USA.
  */
 
-#ifndef USER_SPACE
-#include <linux/slab.h>
-#endif
-
-#ifdef USER_SPACE
 #include "vdfs_tools.h"
 #include <ctype.h>
-#endif
-
 #include "vdfs4.h"
 #include <linux/version.h>
 #include "debug.h"
@@ -55,8 +48,7 @@ int vdfs4_exttree_cmpfn(struct vdfs4_generic_key *__key1,
 	return cmp_2_le64 (key1->iblock, key2->iblock);
 }
 
-#ifdef USER_SPACE
-
+/* ======== TOOLS ONLY BEGIN ========== */
 struct vdfs4_exttree_key *vdfs4_get_exttree_key(void)
 {
 	struct vdfs4_exttree_key *key =
@@ -68,8 +60,7 @@ void vdfs4_put_exttree_key(struct vdfs4_exttree_key *key)
 {
 	free(key);
 }
-
-#endif
+/* ======== TOOLS ONLY END ========= */
 
 int vdfs4_exttree_get_next_record(struct vdfs4_exttree_record *record)
 {
@@ -318,7 +309,7 @@ int vdfs4_parse_fork(struct inode *inode, struct vdfs4_fork *lfork)
 	ifork->prealloc_start_block = 0;
 
 	/* VFS expects i_blocks value in sectors*/
-	inode->i_blocks = ifork->total_block_count <<
+	inode->i_blocks = ((blkcnt_t)ifork->total_block_count) <<
 			(sbi->block_size_shift - 9);
 
 	vdfs4_lfork_to_rfork(lfork, ifork);
@@ -401,7 +392,7 @@ void vdfs4_put_exttree_key(struct vdfs4_exttree_key *key)
 {
 	kmem_cache_free(extents_tree_key_cachep, key);
 }
-
+#endif /* USER_SPACE */
 
 /**
  * @brief	Look up for extent nearest to given iblock no
@@ -421,11 +412,8 @@ int vdfs4_exttree_get_extent(struct vdfs4_sb_info *sbi, struct inode *inode,
 	int ret = 0;
 	__u64 first_iblock, object_id = inode->i_ino;
 	__u64 last_iblock;
-	struct vdfs4_btree *tree;
 
-	tree = sbi->extents_tree;
-
-	mutex_r_lock(tree->rw_tree_lock);
+	mutex_r_lock(sbi->extents_tree->rw_tree_lock);
 
 	record = vdfs4_exttree_find_record_strict_obj(sbi, object_id, iblock,
 			VDFS4_BNODE_MODE_RO);
@@ -449,11 +437,12 @@ int vdfs4_exttree_get_extent(struct vdfs4_sb_info *sbi, struct inode *inode,
 		ret = -ENOENT;
 
 exit:
-	mutex_r_unlock(tree->rw_tree_lock);
+	mutex_r_unlock(sbi->extents_tree->rw_tree_lock);
 
 	return ret;
 }
 
+#ifndef USER_SPACE
 int vdfs4_extree_insert_extent(struct vdfs4_sb_info *sbi,
 		unsigned long object_id, struct vdfs4_extent_info *extent,
 		int force_insert)
@@ -631,4 +620,4 @@ long vdfs4_fallocate(struct file *file, int mode, loff_t offset, loff_t len)
 		return -ENODEV;
 	return -EOPNOTSUPP; /*todo implementation*/
 }
-#endif
+#endif /* USER_SPACE */

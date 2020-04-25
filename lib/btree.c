@@ -18,16 +18,13 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-
 #ifndef USER_SPACE
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/pagevec.h>
-
-#else
-#include "vdfs_tools.h"
 #endif
 
+#include "vdfs_tools.h"
 #include "vdfs4_layout.h"
 #include "vdfs4.h"
 #include "btree.h"
@@ -561,7 +558,7 @@ int vdfs4_insert_into_node(struct vdfs4_bnode *bnode,
 		return err;
 
 	/* Check if node have room for another one offset (to free space) */
-	VDFS4_BUG_ON(node_descr_ptr->free_space < sizeof(vdfs4_bt_off_t));
+	VDFS4_BUG_ON(node_descr_ptr->free_space < new_key->record_len + sizeof(vdfs4_bt_off_t));
 
 	node_descr_ptr->recs_count++;
 	node_free_space = node_descr_ptr->free_space - (new_key->record_len +
@@ -957,32 +954,6 @@ static void traverse_stack_destroy(struct list_head *stack)
 	}
 }
 
-#ifdef USER_SPACE
-#ifdef CONFIG_VDFS4_DEBUG
-int vdfs4_check_btree_slub_caches_empty(void)
-{
-	if (btree_traverse_stack_cachep->items_num) {
-		VDFS4_ERR("Traverse stack cache has %d items",
-				btree_traverse_stack_cachep->items_num);
-		return -1;
-	}
-
-	if (btree_record_info_cachep->items_num) {
-		VDFS4_ERR("Bnode record info cache has %d items",
-				btree_record_info_cachep->items_num);
-		return -1;
-	}
-
-	if (btree_todo_cachep->items_num) {
-		VDFS4_ERR("Todo cache has %d items",
-				btree_todo_cachep->items_num);
-		return -1;
-	}
-	return 0;
-}
-#endif
-#endif
-
 static inline void put_add_index_work(struct list_head *todo_list_head,
 		struct vdfs4_btree_traverse_stack *traverse_data,
 		__u32 point_to_bnode_id, __u32 current_root_id)
@@ -1063,7 +1034,6 @@ static struct vdfs4_bnode *btree_traverse_level(struct vdfs4_btree *btree,
 			dang_bnode = NULL;
 			record = dang_record;
 			*pos = dang_pos;
-			curr_bnode_id = bnode->node_id;
 
 			if (todo_list_head) {
 				struct vdfs4_btree_traverse_stack *traverse_data;
@@ -2579,10 +2549,6 @@ void vdfs4_mark_record_dirty(struct vdfs4_btree_gen_record *record)
 	vdfs4_mark_bnode_dirty(rec_info->rec_pos.bnode);
 }
 
-
-#ifdef USER_SPACE
-
-
 u_int32_t btree_get_bitmap_size(struct vdfs4_sb_info *sbi)
 {
 	u_int32_t nodes_bitmap_size;
@@ -2671,6 +2637,8 @@ int btree_init(struct vdfs4_sb_info *sbi,
 		goto error_exit;
 	}
 
+	vdfs4_list_init(&tree->vdfs4_btree.bnode_list);
+
 	return 0;
 error_exit:
 	return ret;
@@ -2740,6 +2708,4 @@ void btree_destroy_tree(struct vdfs_tools_btree_info *tree)
 	free(tree->bnode_array);
 	free(tree->vdfs4_btree.split_buff);
 }
-
-#endif
 

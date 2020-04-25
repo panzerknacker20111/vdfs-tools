@@ -215,7 +215,7 @@ int open_disk(struct vdfs4_sb_info *sb_info)
 	}
 
 	/* open device */
-	sb_info->disk_op_image.file_id = open(filename, O_RDWR);
+	sb_info->disk_op_image.file_id = open(filename, O_RDWR|O_SYNC);
 	/* opening fails */
 	/* log error and report it to caller */
 	if (sb_info->disk_op_image.file_id == -1) {
@@ -287,6 +287,7 @@ int vdfs4_create_image(const char *name,
 
 	/* no disk write in simulate mode */
 	if (IS_FLAG_SET(sb_info->service_flags, SIMULATE)) {
+		sb_info->disk_op_image.file_id = open("/dev/null",  O_RDWR);
 		ret = 0;
 		goto FUNC_END;
 	}
@@ -302,9 +303,8 @@ int vdfs4_create_image(const char *name,
 			ret = -EEXIST;
 		else
 			ret = -ENOENT;
-		log_error("Can't open image file \"%s\" (%s)",
-			name,
-			strerror(errno));
+		log_error("Can't open image file \"%s\" (err:%d)",
+			name, errno);
 		goto FUNC_END;
 	/* disk is opened */
 	} else {
@@ -443,7 +443,7 @@ int vdfs4_append(int fd, char *buffer, int size)
 	/* seek to the end of file */
 	if (0 > lseek(fd, 0, SEEK_END)) {
 		log_error("Can't perform SEEK_END operation err=", errno);
-		ret_val = -ESPIPE;
+		return -ESPIPE;
 	}
 	/* write the data to file */
 	ret_val = diskop_write(fd, buffer, size);
@@ -487,29 +487,39 @@ void get_next_file(/*struct vdfs4_sb_info *sb_info*/)
 int copy_symlink_file_to_image(struct vdfs4_sb_info *sbi,
 		const char *src_filename, u64 *file_offset_abs, int size)
 {
+	int ret = 0;
 	char *buf = malloc(sbi->block_size);
+
 	if (!buf) {
 		log_error("Mkfs can't allocate enough memory");
 		return -ENOMEM;
 	}
+
 	memset(buf, 0, sbi->block_size);
-	int r = readlink(src_filename, buf, size);
-	if (r < 0) {
+	ret = readlink(src_filename, buf, size);
+	if (ret < 0) {
 		log_error("Can't read link %s", src_filename);
 		free(buf);
 		return errno;
 	}
-	allocate_space(sbi, (byte_to_block(*file_offset_abs,
-			sbi->block_size)), (byte_to_block(r,
-			sbi->block_size)), file_offset_abs);
+
+	ret = allocate_space(sbi,
+			byte_to_block(*file_offset_abs, sbi->block_size),
+			byte_to_block(ret, sbi->block_size), file_offset_abs);
+	if (ret < 0) {
+		log_error("Can't allocate space for symlink(ret:%d)", ret);
+		goto err;
+	}
+
 	*file_offset_abs = block_to_byte(*file_offset_abs, sbi->block_size);
-	vdfs4_write_blocks(sbi, byte_to_block
-				(*file_offset_abs, sbi->block_size), buf,
-				byte_to_block(size,
-					sbi->block_size));
+	ret = vdfs4_write_blocks(sbi,
+			byte_to_block(*file_offset_abs, sbi->block_size),
+			buf, byte_to_block(size, sbi->block_size));
 	*file_offset_abs += size;
+
+err:
 	free(buf);
-	return 0;
+	return ret;
 }
 
 /**
@@ -584,7 +594,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info,
 
 
 		if (read_real == -1) {
-			log_warning("%s %s", "Can't read file", src_filename);
+			log_error("%s %s", "Can't read file", src_filename);
 			ret = errno;
 			goto exit;
 		}
@@ -594,7 +604,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info,
 				buf, byte_to_block(need_to_read,
 				sb_info->block_size));
 		if (ret) {
-			log_warning("%s %s", "Can't copy file", src_filename);
+			log_error("%s %s", "Can't copy file", src_filename);
 			goto exit;
 		}
 		file_offset += read_real;
@@ -667,7 +677,7 @@ int get_file_size(int fd, off_t *file_size)
 	int ret = fstat(fd, &info);
 	if (ret == -1) {
 		ret = errno;
-		log_error("Can't get stat info because of %s", strerror(errno));
+		log_error("Can't get stat info because of err(%d)", errno);
 		*file_size = 0;
 		return ret;
 	}

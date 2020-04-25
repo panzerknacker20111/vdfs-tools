@@ -39,6 +39,8 @@ int flush_snapshot(struct vdfs4_sb_info *sbi)
 	unsigned int full_table_size = sbi->snapshot.tables_extent.block_count
 			* sbi->block_size;
 
+	log_activity("Flush SNAPSHOT start");
+
 	if (size + CRC32_SIZE > full_table_size) {
 		log_error("Error: size for on-disk layout(%u) is smaller then "
 				"snapshot calculated size(%u)",
@@ -48,8 +50,11 @@ int flush_snapshot(struct vdfs4_sb_info *sbi)
 	}
 
 	buffer = realloc(buffer, full_table_size);
-	if (!buffer)
+	if (!buffer) {
+		log_error("Error: realloc failed (0x%x/0x%x)",
+				buffer, full_table_size);
 		return -ENOMEM;
+	}
 
 	/* first - calculate snapshot tables CRC */
 	base_table = (struct vdfs4_base_table *)buffer;
@@ -58,15 +63,66 @@ int flush_snapshot(struct vdfs4_sb_info *sbi)
 	checksum = vdfs4_crc32(buffer, size);
 	*((__le32 *)(buffer + size)) = cpu_to_le32(checksum);
 
+	sbi->snapshot.checksum = cpu_to_le32(checksum);
+
 	/* second - write full snapshot table to disk */
-	memset(buffer + size + CRC32_SIZE, 0,
+	if (full_table_size > size + CRC32_SIZE)
+		memset(buffer + size + CRC32_SIZE, 0,
 			full_table_size - size - CRC32_SIZE);
+
+	log_activity("Flush SNAPSHOT - snapshot table data ready");
 	ret = vdfs4_write_blocks(sbi, sbi->snapshot.tables_extent.first_block +
 			sbi->vdfs4_start_block, buffer,
 			sbi->snapshot.tables_extent.block_count);
 
 	sbi->snapshot.snapshot_subsystem.buffer = buffer;
 	sbi->snapshot.snapshot_subsystem.buffer_size = full_table_size;
+	if (ret)
+		log_error("Failed to flush SNAPSHOT");
+	else
+		log_activity("Succeed to flush SNAPSHOT");
+
+	return ret;
+}
+
+int flush_hashtable(struct vdfs4_sb_info *sbi)
+{
+	int ret = 0;
+	__u32 checksum;
+	char *buffer = sbi->meta_hashtable.subsystem.buffer;
+	unsigned int size = sbi->meta_hashtable.subsystem.buffer_size;
+	unsigned int full_table_size =
+		DIV_ROUND_UP(size + CRC32_SIZE, sbi->block_size) * sbi->block_size;
+
+	log_activity("Flush HASHTABLE start");
+
+	buffer = realloc(buffer, full_table_size);
+	if (!buffer) {
+		log_error("Error: realloc failed (0x%x/0x%x)",
+				buffer, full_table_size);
+		return -ENOMEM;
+	}
+
+	checksum = vdfs4_crc32(buffer, size);
+	*((__le32 *)(buffer + size)) = cpu_to_le32(checksum);
+	sbi->meta_hashtable.checksum = cpu_to_le32(checksum);
+
+	if (full_table_size > size + CRC32_SIZE)
+		memset(buffer + size + CRC32_SIZE, 0,
+			full_table_size - size - CRC32_SIZE);
+
+	log_activity("Flush HASHTABLE - hash table data ready");
+	/* write meta hashtable to disk */
+	ret = vdfs4_write_blocks(sbi, sbi->snapshot.tables_extent.first_block +
+			sbi->vdfs4_start_block + (sbi->snapshot.table_tbc >> 1),
+			buffer, full_table_size / sbi->block_size);
+
+	sbi->meta_hashtable.subsystem.buffer = buffer;
+	sbi->meta_hashtable.subsystem.buffer_size = full_table_size;
+	if (ret)
+		log_error("Failed to flush HASHTABLE");
+	else
+		log_activity("Succeed to flush HASHTABLE");
 
 	return ret;
 }
@@ -83,14 +139,14 @@ int calculate_metadata_size(struct vdfs4_sb_info *sbi)
 	__u32 metadata_size, metadata_addition;
 	int ret = 0;
 
-
-	/* meta_extent contains already allocated space, we must expand it  */
-
+	/* meta_extent contains already allocated space, we must expand it
+	 * reserve +256 blocks for preventing early meta expansion.
+	 */
 	metadata_size = sbi->snapshot.metadata_size;
 	metadata_addition = metadata_size * 2 <
 		(volume_size_in_blocks / 100) * 2 ?
-		(volume_size_in_blocks / 100) * 2 - metadata_size :
-		metadata_size;
+		(volume_size_in_blocks / 100) * 2 - metadata_size + 256 :
+		metadata_size + 256;
 
 	/* align metadata size to super page size */
 	metadata_size = ALIGN(metadata_size,
@@ -167,23 +223,17 @@ int calculate_translation_tables_size(struct vdfs4_sb_info *sbi, int allocate)
 	tables_size_in_blocks <<= 1;
 allocate:
 	if (allocate) {
-		if (!sbi->vdfs4_volume) {
-			ret = allocate_space(sbi, ADDR_ANY,
-				tables_size_in_blocks,
-				(u_int64_t *)&tables_start);
-			tables_extent->first_block = tables_start;
-		} else
-			ret = allocate_space_for_each_subsystem_block(sbi,
-					tables_size_in_blocks, NULL, 1, 0,
-					NULL, tables_extent,
-					&sbi->snapshot.tables_extent_used);
-
-		if (ret)
+		ret = allocate_space(sbi, ADDR_ANY,
+			tables_size_in_blocks,
+			(u_int64_t *)&tables_start);
+		tables_extent->first_block = tables_start;
+		if (ret) {
+			log_error("Can't allocate space for"
+				  " translation tables");
 			return ret;
-
+		}
 	}
-	if (!sbi->vdfs4_volume)
-		tables_extent->block_count = tables_size_in_blocks;
+	tables_extent->block_count = tables_size_in_blocks;
 	sbi->snapshot.table_tbc = tables_size_in_blocks;
 	return 0;
 }
@@ -215,31 +265,19 @@ int place_on_volume_preallocation(struct vdfs4_sb_info *sbi)
 	struct vdfs4_extent_info *meta_extent = sbi->snapshot.metadata_extent;
 	__u64 metadata_addr;
 	/* allocate space for metadata preallocation */
-	if (sbi->vdfs4_volume) {
-		ret = allocate_space_for_each_subsystem_block(sbi,
-				sbi->snapshot.preallocation_len, 0, 1,
-				2, 0, sbi->snapshot.metadata_extent,
-				&sbi->snapshot.snapshot_subsystem.fork.
-				used_extents);
-	} else {
-		ret = allocate_space(sbi, (meta_extent->first_block +
-					meta_extent->block_count),
-					sbi->snapshot.preallocation_len,
-					(u_int64_t *)&metadata_addr);
-
+	ret = allocate_space(sbi, (meta_extent->first_block +
+				meta_extent->block_count),
+				sbi->snapshot.preallocation_len,
+				(u_int64_t *)&metadata_addr);
 	if (ret) {
 		log_error("Can't allocate space for snpashot preallocation");
-			return ret;
-
+		return ret;
 	}
-		assert(metadata_addr == meta_extent->first_block +
-				meta_extent->block_count);
-
-		meta_extent->block_count += sbi->snapshot.preallocation_len;
-	}
+	assert(metadata_addr == meta_extent->first_block +
+			meta_extent->block_count);
+	meta_extent->block_count += sbi->snapshot.preallocation_len;
 	return ret;
 }
-
 
 int init_snapshot(struct vdfs4_sb_info *sbi)
 {
@@ -263,4 +301,27 @@ void destroy_snapshot(struct vdfs4_sb_info *sbi)
 {
 
 	free(sbi->snapshot.snapshot_subsystem.buffer);
+}
+
+int init_hashtable(struct vdfs4_sb_info *sbi)
+{
+	struct vdfs4_meta_hashtable *meta_hashtable;
+
+	meta_hashtable = calloc(1, sizeof(*meta_hashtable));
+	if (!meta_hashtable)
+		return -ENOMEM;
+
+	/* copy signature */
+	memcpy((void *)&meta_hashtable->signature,
+	       VDFS4_META_HASHTABLE,
+	       sizeof(VDFS4_META_HASHTABLE) - 1);
+	sbi->meta_hashtable.subsystem.subsystem_name = "HASHTABLE";
+	sbi->meta_hashtable.subsystem.buffer = (char *)meta_hashtable;
+	sbi->meta_hashtable.subsystem.buffer_size = sizeof(*meta_hashtable);
+	return 0;
+}
+
+void destroy_hashtable(struct vdfs4_sb_info *sbi)
+{
+	free(sbi->meta_hashtable.subsystem.buffer);
 }
