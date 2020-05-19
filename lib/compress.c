@@ -26,6 +26,7 @@
 #include <lzo/lzoconf.h>
 #include <lzo/lzo1x.h>
 #include <vdfs_tools.h>
+#define BUILD_COMPRESS 1
 #include <compress.h>
 #include <openssl/md5.h>
 #include <openssl/sha.h>

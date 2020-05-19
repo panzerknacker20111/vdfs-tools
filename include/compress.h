@@ -147,17 +147,27 @@ struct thread_file_info {
 	char exit;
 	int min_compressed_size;
 };
-struct thread_info *thread;
-struct thread_file_info *thread_file;
-pthread_cond_t file_finished;
-pthread_mutex_t file_finished_mutex;
-pthread_mutex_t files_count_mutex;
-pthread_mutex_t find_record_mutex;
-pthread_mutex_t	write_file_mutex;
-pthread_mutex_t	thread_free_mutex;
-pthread_cond_t thread_free_cond;
-pthread_mutex_t	thread_file_free_mutex;
-pthread_cond_t thread_file_free_cond;
+#ifndef BUILD_COMPRESS
+#define EXTERN_COMPRESS extern
+#else
+#define EXTERN_COMPRESS
+#endif
+#ifndef BUILD_DECOMPRESS
+#define EXTERN_DECOMPRESS extern
+#else
+#define EXTERN_DECOMPRESS
+#endif
+EXTERN_COMPRESS struct thread_info *thread;
+EXTERN_COMPRESS struct thread_file_info *thread_file;
+EXTERN_COMPRESS pthread_cond_t file_finished;
+EXTERN_COMPRESS pthread_mutex_t file_finished_mutex;
+EXTERN_COMPRESS pthread_mutex_t files_count_mutex;
+EXTERN_COMPRESS pthread_mutex_t find_record_mutex;
+EXTERN_COMPRESS pthread_mutex_t	write_file_mutex;
+EXTERN_COMPRESS pthread_mutex_t	thread_free_mutex;
+EXTERN_COMPRESS pthread_cond_t thread_free_cond;
+EXTERN_COMPRESS pthread_mutex_t	thread_file_free_mutex;
+EXTERN_COMPRESS pthread_cond_t thread_file_free_cond;
 void compress_file_thread(void *arg);
 void init_threads(struct vdfs4_sb_info *sbi);
 void compress_chunk_thread(void *arg);
@@ -165,14 +175,14 @@ void compress_chunk_thread(void *arg);
 __u64 get_metadata_size(struct vdfs4_sb_info *sbi);
 int decompress(unsigned char *ibuff, int ilen, unsigned char *obuff, int *olen);
 
-char *compressor_names[VDFS4_COMPR_NR];
-int (*decompressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
+EXTERN_COMPRESS char *compressor_names[VDFS4_COMPR_NR];
+EXTERN_DECOMPRESS int (*decompressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
 		unsigned char *obuff, int *olen);
 int vdfs4_cattree_cmpfn(struct vdfs4_generic_key *__key1,
 		struct vdfs4_generic_key *__key2);
 enum compr_type get_compression_type(char *type_string);
 
-int (*compressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
+EXTERN_COMPRESS int (*compressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
 		unsigned char *obuff, int olen, int *comp_size);
 int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 		int need_compress, int compress_type, off_t *rsl_filesize,

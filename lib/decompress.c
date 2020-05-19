@@ -19,6 +19,7 @@
  * USA.
  */
 
+#define BUILD_DECOMPRESS 1
 #include "compress.h"
 #include <encrypt.h>
 #include "vdfs_tools.h"
