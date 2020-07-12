@@ -673,7 +673,7 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	/*sbi->xattrtree.tree.name = subsystem_names[6];
 	sbi->small_area_bitmap.name = subsystem_names[7];
 	sbi->small_area.name = subsystem_names[8];*/
-	if (sbi->image_size && sbi->image_size < MIN_VOLUME_SIZE) {
+	if (sbi->max_volume_size && sbi->max_volume_size < MIN_VOLUME_SIZE) {
 		log_error("Can't make file less then %d",
 				MIN_VOLUME_SIZE);
 		return -EINVAL;
@@ -683,12 +683,12 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 
 
 	/* in case of image creation without size set in arguments */
-	if (sbi->image_size == 0) {
+	if (sbi->max_volume_size == 0) {
 		log_info("Image size is not specified.");
-		sbi->image_size = -1;
-		sbi->min_image_size = -1;
+		sbi->max_volume_size = -1;
+		sbi->min_volume_size = -1;
 	} else {
-		log_info("Image size is %llu", sbi->image_size);
+		log_info("Image size is %llu", sbi->max_volume_size);
 	}
 
 	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
@@ -704,7 +704,7 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	log_info("Block size = %lu, erase block = %lu, super page = %lu",
 		sbi->block_size, sbi->erase_block_size,
 		sbi->super_page_size);
-	log_info("Disk size in blocks %llu", byte_to_block(sbi->image_size,
+	log_info("Disk size in blocks %llu", byte_to_block(sbi->max_volume_size,
 		sbi->block_size));
 
 	clock_gettime(CLOCK_REALTIME, &cur_time);
@@ -941,6 +941,8 @@ void destroy_threads(void)
 static int handle_used_space(struct vdfs4_sb_info *sbi)
 {
 	struct vdfs4_extended_super_block esb = sbi->esb;
+	struct vdfs4_subsystem_data *mehs_subs =
+		&(sbi->meta_hashtable.subsystem);
 	long long unsigned int used_block;
 	uint64_t used_size;
 	int ret = 0;
@@ -950,7 +952,12 @@ static int handle_used_space(struct vdfs4_sb_info *sbi)
 
 	/* Because only one struct vdfs4_extent is made during initial image creation,
 	    it's enough to refer first entry in this time */
-	used_block = le64_to_cpu(esb.meta[0].length) + le64_to_cpu(esb.meta[0].begin);
+	used_block = le64_to_cpu(esb.meta[0].length)
+		+ le64_to_cpu(esb.meta[0].begin);
+	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)
+	    && sbi->rsa_key) {
+		used_block += mehs_subs->fork.extents[0].block_count;
+	}
 
 	/* crc at the end of image file */
 	used_block += 1;
@@ -959,7 +966,7 @@ static int handle_used_space(struct vdfs4_sb_info *sbi)
 	log_activity("Used size : %llu KB", used_size / 1024);
 
 	if (IS_FLAG_SET(sbi->service_flags, LIMITED_SIZE) &&
-	    used_size > sbi->min_image_size) {
+	    used_size > sbi->min_volume_size) {
 		log_error("the image size(-z) is not enough");
 		return -ENOSPC;
 	}
@@ -967,10 +974,10 @@ static int handle_used_space(struct vdfs4_sb_info *sbi)
 	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
 		return ret;
 
-	/* make suitable image size
-	   NOTE : the value of image_size is reset on RO image case */
+	/* make suitable image size */
 	if (IS_FLAG_SET(sbi->service_flags, NO_STRIP_IMAGE))
-		ret = ftruncate(sbi->disk_op_image.file_id, sbi->image_size);
+		ret = ftruncate(sbi->disk_op_image.file_id,
+				sbi->max_volume_size);
 	else
 		ret = ftruncate(sbi->disk_op_image.file_id, used_size);
 
@@ -1190,14 +1197,15 @@ int main(int argc, char *argv[])
 		goto err_destroy_all;
 
 	if (!IS_FLAG_SET(sbi.service_flags, READ_ONLY_IMAGE)) {
-		ret = flush_hashtable(&sbi);
-		if (ret)
-			goto err_destroy_all;
-
 		ret = flush_subsystem(&sbi, &sbi.space_manager_info.subsystem);
 		if (ret)
 			goto err_destroy_all;
+	} else if (sbi.rsa_key) {
+		ret = flush_hashtable(&sbi);
+		if (ret)
+			goto err_destroy_all;
 	}
+
 	ret = prepare_superblocks(&sbi);
 	if (ret)
 		goto err_destroy_all;
@@ -1261,6 +1269,8 @@ err_exit:
 	}
 	else {
 		remove_image_file(&sbi);
+		if (ret == -ENOSPC)
+			log_error("Mkfs can't allocate enough disk space");
 		log_error("mkfs.vdfs was failed...!!");
 	}
 err_before_open:

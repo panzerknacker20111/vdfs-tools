@@ -170,8 +170,13 @@ static int fill_superblock(struct vdfs4_sb_info *sbi)
 	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE))
 		sbi->sb.read_only = 1;
 
-	sbi->sb.maximum_blocks_count =
-		cpu_to_le64(sbi->image_size / sbi->block_size);
+	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
+		sbi->sb.maximum_blocks_count =
+			cpu_to_le64(sbi->image_file_size / sbi->block_size);
+	} else {
+		sbi->sb.maximum_blocks_count =
+			cpu_to_le64(sbi->max_volume_size / sbi->block_size);
+	}
 
 	memcpy(&sbi->sb.creation_timestamp, &sbi->timestamp,
 				sizeof(sbi->sb.creation_timestamp));
@@ -285,8 +290,14 @@ static void fill_ext_superblock(struct vdfs4_sb_info *sbi)
 		cpu_to_le32(snapshot->tables_extent.block_count);*/
 	sbi->esb.volume_body.length = cpu_to_le32(get_volume_body_length(sbi));
 
-	sbi->esb.volume_blocks_count =
-		cpu_to_le64(sbi->min_image_size / sbi->block_size);
+	/* set volume size */
+	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
+		sbi->esb.volume_blocks_count =
+			cpu_to_le64(sbi->image_file_size / sbi->block_size);
+	} else {
+		sbi->esb.volume_blocks_count =
+			cpu_to_le64(sbi->min_volume_size / sbi->block_size);
+	}
 
 	sbi->esb.files_count = cpu_to_le64(sbi->files_count);
 	sbi->esb.folders_count = cpu_to_le64(sbi->folders_count);
@@ -296,16 +307,29 @@ static void fill_ext_superblock(struct vdfs4_sb_info *sbi)
 	sbi->esb.debug_area.begin = cpu_to_le64(sbi->debug_area.first_block);
 	sbi->esb.debug_area.length = cpu_to_le32(sbi->debug_area.block_count);
 
+	/* initial sync counter */
 	sbi->esb.sync_counter = cpu_to_le32(1);
+
+	/* fill HASHTABLE extent */
+	sbi->esb.meta_hashtable_area.begin =
+		sbi->meta_hashtable.subsystem.fork.extents[0].first_block;
+	sbi->esb.meta_hashtable_area.length =
+		sbi->meta_hashtable.subsystem.fork.extents[0].block_count;
+
+	/* calculate extended superblock checksum */
 	sbi->esb.checksum = cpu_to_le32(vdfs4_crc32(&sbi->esb, sizeof(sbi->esb) -
 			sizeof(sbi->esb.checksum)));
 }
 
 int prepare_superblocks(struct vdfs4_sb_info *sbi)
 {
-	/* compact filesystem size to used size in read only case */
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE))
-		sbi->image_size = get_image_size(sbi);
+	int ret;
+
+	ret = get_image_size(sbi, &sbi->image_file_size);
+	if (ret) {
+		log_error("get image file size failed");
+		return ret;
+	}
 
 	fill_ext_superblock(sbi);
 	return fill_superblock(sbi);
@@ -413,7 +437,7 @@ int discard_volume(struct vdfs4_sb_info *sbi)
 	if (S_ISBLK(stat_buf.st_mode)) {
 		/* send discard cmd */
 		range[0] = 0;
-		range[1] = sbi->image_size;
+		range[1] = sbi->max_volume_size;
 		ret = ioctl(sbi->disk_op_image.file_id,
 			    BLKDISCARD, &range);
 		if (ret < 0 && errno == EOPNOTSUPP) {

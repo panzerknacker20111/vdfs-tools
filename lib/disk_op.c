@@ -230,7 +230,7 @@ int open_disk(struct vdfs4_sb_info *sb_info)
 		}
 
 	if (S_ISREG(stat_buf.st_mode)) {
-		sb_info->image_size = stat_buf.st_size;
+		sb_info->max_volume_size = stat_buf.st_size;
 	} else if (S_ISBLK(stat_buf.st_mode)) {
 		if (0 != getuid()) {
 			log_error("You must be root to perform "
@@ -247,12 +247,12 @@ int open_disk(struct vdfs4_sb_info *sb_info)
 			goto FUNC_END;
 		}
 		ret = diskop_get_disk_size(sb_info->disk_op_image.file_id,
-				&sb_info->image_size);
+				&sb_info->max_volume_size);
 	} else {
 		log_error("Volume type is not supported");
 		return -1;
 	}
-	sb_info->min_image_size = sb_info->image_size;
+	sb_info->min_volume_size = sb_info->max_volume_size;
 FUNC_END:
 	return ret;
 }
@@ -296,7 +296,7 @@ int vdfs4_create_image(const char *name,
 	errno = 0;
 	sb_info->disk_op_image.file_id = open(name,
 		O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
-		S_IRUSR | S_IWUSR);
+		S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	if (sb_info->disk_op_image.file_id == -1) {
 		/* file exists */
 		if (errno == EEXIST)
@@ -401,12 +401,12 @@ int vdfs4_read_blocks(struct vdfs4_sb_info *sb_info,
 	assert(sb_info != 0);
 	actual_offset = offset * sb_info->block_size;
 	/* check we are inside disk */
-	assert(actual_offset < sb_info->image_size);
+	assert(actual_offset < sb_info->max_volume_size);
 	/* check that record does not fall out of disk */
-	if (actual_offset + size_in_bytes >= sb_info->image_size) {
-		assert((size_in_bytes + actual_offset- sb_info->image_size) <=
-				sb_info->block_size);
-		size_in_bytes = sb_info->image_size - actual_offset;
+	if (actual_offset + size_in_bytes >= sb_info->max_volume_size) {
+		assert((size_in_bytes + actual_offset- sb_info->max_volume_size)
+		       <= sb_info->block_size);
+		size_in_bytes = sb_info->max_volume_size - actual_offset;
 	}
 	/* if nothing to do, go to end of function */
 
@@ -491,7 +491,7 @@ int copy_symlink_file_to_image(struct vdfs4_sb_info *sbi,
 	char *buf = malloc(sbi->block_size);
 
 	if (!buf) {
-		log_error("Mkfs can't allocate enough memory");
+		log_error("Can't allocate enough memory");
 		return -ENOMEM;
 	}
 
@@ -564,7 +564,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info,
 			sb_info->block_size)), (byte_to_block(file_size,
 			sb_info->block_size)), (u_int64_t *)file_offset_abs);
 	if (ret) {
-		log_error("Mkfs can't allocate enough disk space");
+		log_error("Can't allocate enough disk space");
 		return ret;
 	}
 	*file_offset_abs = block_to_byte(*file_offset_abs, sb_info->block_size);
@@ -577,7 +577,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info,
 	buf_size = sb_info->block_size;
 	buf = malloc(buf_size);
 	if (!buf) {
-		log_info("Mkfs can't allocate enough memory");
+		log_info("Can't allocate enough memory");
 		close(file);
 		return errno;
 	}
@@ -644,14 +644,17 @@ void copy_file_from_image(/*struct vdfs4_sb_info *sb_info,
 {
 }
 
-off_t get_image_size(struct vdfs4_sb_info *sbi)
+int get_image_size(struct vdfs4_sb_info *sbi, u_int64_t *size)
 {
 	struct stat file_stat;
 
-	if (fstat(sbi->disk_op_image.file_id, &file_stat) < 0)
+	if (fstat(sbi->disk_op_image.file_id, &file_stat) < 0) {
+		log_error("fstat failed (err:%d)", errno);
 		return -1;
+	}
 
-	return file_stat.st_size;
+	*size = file_stat.st_size;
+	return 0;
 }
 
 void remove_image_file(struct vdfs4_sb_info *sbi)

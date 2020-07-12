@@ -2278,8 +2278,12 @@ static int check_ordering_at_level(struct vdfs4_bnode *bnode)
 			(struct vdfs4_generic_key *) new_record->key);
 
 		if (cmp_res > 0) {
+			struct vdfs4_btree_record_info *rec_info =
+				VDFS4_BTREE_REC_I(new_record);
 			VDFS4_ERR("Key values aren't in increasing order\n"
-			"bnode id %d\n", bnode->node_id);
+				  "bnode id %d, pos %d\n",
+				  rec_info->rec_pos.bnode->node_id,
+				  rec_info->rec_pos.pos);
 			check_ret = -EINVAL;
 		}
 	}

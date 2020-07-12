@@ -387,10 +387,12 @@ struct vdfs4_sb_info {
 	FILE *squash_list_file;
 	/** Filesystem timestamp */
 	struct vdfs4_timespec timestamp;
-	/** Filesystem size in bytes (min) */
-	u_int64_t min_image_size;
-	/** Filesystem size in bytes (max), re-set on RO image creation case */
-	u_int64_t image_size;
+	/** Filesystem Volume size in bytes (min) */
+	u_int64_t min_volume_size;
+	/** Filesystem Volume size in bytes (max) */
+	u_int64_t max_volume_size;
+	/** Generated Image file size */
+	u_int64_t image_file_size;
 	/** Size of metadata of new filesystem in bytes */
 	unsigned long long metadata_size;
 	/** Device or image file name */
@@ -518,7 +520,7 @@ static inline __le64 get_volume_body_length(struct vdfs4_sb_info *sbi)
 {
 	__le64 volume_body_lenght = 0;
 
-	volume_body_lenght = byte_to_block_no_round(sbi->image_size,
+	volume_body_lenght = byte_to_block_no_round(sbi->max_volume_size,
 			sbi->block_size);
 	volume_body_lenght -= get_volume_body_start(sbi);
 	volume_body_lenght -= 1;
@@ -626,6 +628,7 @@ void destroy_snapshot(struct vdfs4_sb_info *sbi);
 
 /** meta hashtable functions */
 int init_hashtable(struct vdfs4_sb_info *sbi);
+int flush_hashtable(struct vdfs4_sb_info *sbi);
 void destroy_hashtable(struct vdfs4_sb_info *sbi);
 
 /* Hard link area functions */
@@ -677,7 +680,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info, const char *src_filename,
 void copy_file_from_image(/*struct vdfs4_sb_info *sb_info,
 			const char *src_filename,
 			const char *dst_filename*/);
-off_t get_image_size(struct vdfs4_sb_info *sbi);
+int get_image_size(struct vdfs4_sb_info *sbi, u_int64_t *size);
 int create_hard_link(/*struct vdfs4_sb_info *sb_info,
 			const char *dst_filename,
 			const char *src_filename*/);

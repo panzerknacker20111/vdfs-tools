@@ -185,7 +185,7 @@ static int64_t get_free_space(struct vdfs4_sb_info *sbi,
 		used_size = block_to_byte(first_free_address + length,
 				     sbi->block_size);
 		if (IS_FLAG_SET(sbi->service_flags, LIMITED_SIZE)
-		    && sbi->min_image_size < used_size) {
+		    && sbi->min_volume_size < used_size) {
 			return -ENOSPC;
 		}
 
@@ -263,7 +263,7 @@ int init_space_manager(struct vdfs4_sb_info *sbi)
 	assert(sbi->log_blocks_in_leb);
 	sign_crc_len = CRC32_SIZE + FSM_BMP_MAGIC_LEN;
 
-	space_manager_info->bits_count = (sbi->image_size
+	space_manager_info->bits_count = (sbi->max_volume_size
 			- sbi->vdfs4_start_block) / sbi->block_size;
 
 	/* Align on_disk_size to the block size boundary */

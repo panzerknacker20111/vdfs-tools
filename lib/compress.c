@@ -49,11 +49,11 @@ char *compressor_names[VDFS4_COMPR_NR] = {
 /* value of 0 means 1 byte alignment */
 size_t compr_align[VDFS4_COMPR_NR][ALIGN_NR] = {
 		[VDFS4_COMPR_UNDEF]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
-		[VDFS4_COMPR_ZLIB]	= {[ALIGN_START] = 8,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_ZLIB]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
 		[VDFS4_COMPR_LZO]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 		[VDFS4_COMPR_XZ]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 		[VDFS4_COMPR_LZMA]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
-		[VDFS4_COMPR_GZIP]	= {[ALIGN_START] = 8,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_GZIP]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
 		[VDFS4_COMPR_NONE]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 };
 
@@ -1856,6 +1856,12 @@ do_compress:
 		if (ret) {
 			if (ret == -ENOTCOMPR) {
 				ret = 0;
+			} else if (ret == -ENOSPC) {
+				log_error("Compression error - %d,"
+						" file - %s", ret,
+						tinfo->ptr->src_full_path);
+				log_error("Mkfs can't allocate enough disk space");
+				exit(-ENOSPC);
 			} else {
 				log_error("Compression error - %d,"
 						" file - %s", ret,
