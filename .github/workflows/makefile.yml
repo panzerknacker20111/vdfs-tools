@@ -1,4 +1,4 @@
-name: Makefile CI
+name: Makefile 143
 
 on:
   workflow_dispatch:
@@ -10,4 +10,4 @@ jobs:
 
     steps:
     - name: Install dependencies
-      run: make mkfs
+      run: make
