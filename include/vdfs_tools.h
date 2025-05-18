@@ -446,6 +446,8 @@ struct vdfs4_sb_info {
 	/* snapshot info */
 	struct snapshot_info snapshot;
 
+	struct meta_hashtable_info meta_hashtable;
+
 	struct vdfs4_subsystem_data inode_bitmap;
 	__u64 last_allocated_inode_number;
 
