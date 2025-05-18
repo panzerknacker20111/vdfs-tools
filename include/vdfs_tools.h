@@ -213,6 +213,26 @@ struct vdfs4_image {
 	int file_id;
 };
 
+struct vdfs4_dlink_info {
+	__u64 dlink_inode_comp;
+	__u64 dlink_inode;
+	__u64 dlink_inode_auth;
+	__u64 dlink_inode_ro_auth;
+	__u64 dlink_signed;
+	int dlink_file_comp_fd;
+	int dlink_file_fd;
+	int dlink_file_auth;
+	int dlink_file_ro_auth;
+	int dlink_file_signed;
+	char *dl_name_comp;
+	char *dl_name_auth;
+	char *dl_name_ro_auth;
+	char *dl_name;
+	char *dl_name_signed;
+	int compression_type;
+	int dlink_count;
+};
+
 /** @brief	Maintains private information for each vdfs4 sysbsystem
  *
  */
@@ -366,7 +386,6 @@ struct vdfs4_sb_info {
 	struct vdfs4_btree       *xattr_tree;
 
 /*---------------------------- vdfs4-tools unique part ------------------------*/
-	__u64 max_volume_size;
 	u_int64_t first_sb_block;
 	u_int64_t first_debug_area_block;
 	u_int64_t last_sb_block;
