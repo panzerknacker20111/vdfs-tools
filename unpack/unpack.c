@@ -776,9 +776,7 @@ exit:
 }
 */
 
-static int process_dlink_unpack(struct vdfs4_sb_info *sbi,
-		struct vdfs4_catalog_dlink_record *dlink_value,
-		const char *name);
+static int process_dlink_unpack(struct vdfs4_sb_info *sbi, struct vdfs4_catalog_dlink_record *dlink_value, const char *name);
 
 /**
  * @brief	Creates hardlink at requested path
