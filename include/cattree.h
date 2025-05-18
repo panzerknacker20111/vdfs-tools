@@ -78,8 +78,4 @@ int vdfs4_cattree_insert_ilink(struct vdfs4_btree *tree, __u64 object_id,
 		__u64 parent_id, const char *name, size_t name_len);
 int vdfs4_cattree_remove_ilink(struct vdfs4_btree *tree, __u64 object_id,
 		__u64 parent_id, const char *name, size_t name_len);
-
-/* ======== TOOLS ONLY ========= */
-struct vdfs4_cattree_record *find_record(struct vdfs4_sb_info *sbi,
-		char *path);
 #endif

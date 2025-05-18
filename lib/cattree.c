@@ -18,13 +18,18 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
+
 #ifndef USER_SPACE
 #include <linux/slab.h>
 #include <linux/ctype.h>
-#endif
 
+#include "vdfs4.h"
+
+#else
 #include "vdfs_tools.h"
 #include <ctype.h>
+#endif
+
 #include "cattree.h"
 #include "debug.h"
 #include "vdfs4.h"
@@ -118,6 +123,7 @@ bool vdfs4_cattree_is_orphan(struct vdfs4_cattree_record *record)
 	switch (record->key->record_type) {
 	case VDFS4_CATALOG_FOLDER_RECORD:
 	case VDFS4_CATALOG_FILE_RECORD:
+	case VDFS4_CATALOG_DLINK_RECORD:
 		return (le32_to_cpu(val->flags) & (1<<ORPHAN_INODE)) != 0;
 	default:
 		return false;
@@ -280,9 +286,8 @@ struct vdfs4_cattree_key *vdfs4_alloc_cattree_key(int name_len,
 {
 	u32 record_len = 0;
 	struct vdfs4_cattree_key *form_key;
-	u32 key_len = sizeof(form_key->gen_key) + sizeof(form_key->parent_id) +
-		sizeof(form_key->object_id) + sizeof(form_key->record_type) +
-		sizeof(form_key->name_len) + (u32)name_len;
+	u32 key_len = sizeof(*form_key) - sizeof(form_key->name) +
+			(u32)name_len;
 
 	key_len = ALIGN(key_len, 8);
 
@@ -300,6 +305,9 @@ struct vdfs4_cattree_key *vdfs4_alloc_cattree_key(int name_len,
 	break;
 	case VDFS4_CATALOG_HLINK_RECORD:
 		record_len = sizeof(struct vdfs4_catalog_hlink_record);
+	break;
+	case VDFS4_CATALOG_DLINK_RECORD:
+		record_len = sizeof(struct vdfs4_catalog_dlink_record);
 	break;
 	case VDFS4_CATALOG_ILINK_RECORD:
 		record_len = 0;
@@ -363,10 +371,6 @@ struct vdfs4_cattree_record *vdfs4_cattree_place_record(
 			(unsigned)len);
 	record = (struct vdfs4_cattree_record *)
 		vdfs4_btree_place_data(tree, &key->gen_key);
-	if(IS_ERR(record))
-		vdfs4_cattree_remove_ilink(tree, object_id, parent_id, name,
-						len);
-
 	kfree(key);
 	return record;
 }
@@ -491,6 +495,7 @@ int vdfs4_cattree_remove(struct vdfs4_btree *tree, __u64 object_id,
 	return ret;
 }
 
+#ifdef USER_SPACE
 int get_cattree_record_size(int key_type)
 {
 	if (key_type == VDFS4_CATALOG_FOLDER_RECORD)
@@ -503,6 +508,10 @@ int get_cattree_record_size(int key_type)
 
 	if (key_type == VDFS4_CATALOG_HLINK_RECORD)
 		return sizeof(struct vdfs4_catalog_hlink_record) +
+			VDFS4_CAT_KEY_MAX_LEN;
+
+	if (key_type == VDFS4_CATALOG_DLINK_RECORD)
+		return sizeof(struct vdfs4_catalog_dlink_record) +
 			VDFS4_CAT_KEY_MAX_LEN;
 
 	/* if key wasn't recognized */
@@ -533,6 +542,8 @@ struct vdfs4_cattree_key *vdfs4_alloc_cattree_record(int name_len,
 	else if (record_type == VDFS4_CATALOG_FOLDER_RECORD)
 		record_len = sizeof(struct vdfs4_catalog_folder_record);
 	else if (record_type == VDFS4_CATALOG_HLINK_RECORD)
+		record_len = sizeof(struct vdfs4_catalog_folder_record);
+	else if (record_type == VDFS4_CATALOG_DLINK_RECORD)
 		record_len = sizeof(struct vdfs4_catalog_folder_record);
 
 	form_key = kzalloc(key_len + record_len, GFP_NOFS);
@@ -681,7 +692,7 @@ void vdfs4_fill_cattree_record_value(struct vdfs4_cattree_record *record,
 		const struct vdfs4_timespec time_access,
 		u_int64_t   begin,
 		u_int64_t   length,
-		unsigned int block_size)
+		unsigned int block_size, int compress_to_dlink)
 {
 	struct vdfs4_catalog_folder_record *val = VDFS4_CATTREE_FOLDVAL(record);
 	struct vdfs4_catalog_hlink_record *hl =
@@ -699,7 +710,9 @@ void vdfs4_fill_cattree_record_value(struct vdfs4_cattree_record *record,
 	val->file_mode = permissions->file_mode;
 	val->uid = permissions->uid;
 	val->gid = permissions->gid;
-
+	if (record->key->record_type == VDFS4_CATALOG_DLINK_RECORD
+			&& compress_to_dlink)
+		val->flags |= (1 << SIGNED_DLINK);
 	memcpy(&val->creation_time, &time_creation,
 		sizeof(val->creation_time));
 	memcpy(&val->modification_time, &time_modification,
@@ -716,44 +729,4 @@ void vdfs4_fill_cattree_record_value(struct vdfs4_cattree_record *record,
 	}
 }
 
-static __u64 __find_parent_id(struct vdfs4_sb_info *sbi, __u64 parent_id,
-		char *name)
-{
-	struct vdfs4_cattree_record *record = vdfs4_cattree_find(
-		&sbi->cattree.vdfs4_btree, parent_id, name, strlen(name),
-		VDFS4_BNODE_MODE_RW);
-	if (IS_ERR(record))
-		return PTR_ERR(record);
-
-	parent_id = le64_to_cpu(record->key->object_id);
-
-	vdfs4_release_record((struct vdfs4_btree_gen_record *)record);
-	return parent_id;
-}
-
-struct vdfs4_cattree_record *find_record(struct vdfs4_sb_info *sbi,
-		char *path)
-{
-	int i, len = strlen(path);
-	char *name = "root";
-	__u64 parent_id = 0;
-
-	for (i = 0; i < len; i++) {
-		if (path[i] == '/') {
-			path[i] = 0;
-			parent_id = __find_parent_id(sbi, parent_id, name);
-			path[i] = '/';
-			if (IS_ERR_VALUE(parent_id)) {
-				log_error("find parent %s - ret:%d",
-					  path, parent_id);
-				return ERR_PTR(parent_id);
-			}
-			name = &path[i + 1];
-			if (name[0] == '/')
-				name++;
-		}
-	}
-	return vdfs4_cattree_find(&sbi->cattree.vdfs4_btree, parent_id, name,
-			strlen(name), VDFS4_BNODE_MODE_RW);
-}
-
+#endif

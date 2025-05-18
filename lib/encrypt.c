@@ -82,13 +82,13 @@ int get_key_from_file(unsigned char *mkey, const char *filename, int m_keysize)
 		return -1;
 	}
 	ret = fread((void *)tmp, sizeof(unsigned char), realsize, file);
-	if( ret != realsize ) {
+	/*if( ret != realsize ) {
 		printf("[ERROR] real size and read size"
 				" are different (real size:%d,"
 				" read size : %d!!!!\n", realsize, ret);
 		fclose(file);
 		return -1;
-	}
+	}*/
 	for (i = 0; i < realsize; i = i+2) {
 		ret = (hextoint((char)tmp[i]) << 4) + hextoint((char)tmp[i+1]);
 		key[i/2] = ret;
@@ -99,20 +99,7 @@ int get_key_from_file(unsigned char *mkey, const char *filename, int m_keysize)
 	return 0;
 }
 
-RSA *create_rsa_from_private_str(char *private_str)
-{
-	RSA *rsa = NULL;
-	BIO *mem;
-	mem = BIO_new_mem_buf(private_str, strlen(private_str));
-	if (!mem) {
-		return ERR_PTR(-ENOMEM);
-	}
-	rsa = PEM_read_bio_RSAPrivateKey(mem, NULL, NULL, NULL);
-	BIO_free(mem);
-	return rsa;
-}
-
-RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
+RSA *create_rsa(char *private_key, char *pub_key, char *q_file, char *p_file)
 {
 	int ret = 0;
 	RSA *rs = NULL;
@@ -122,7 +109,9 @@ RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
 		return ERR_PTR(-ENOMEM);
 	BN_CTX_start(ctx);
 
-	if (pub_file) {
+	if (pub_key) {
+
+
 		int expon = 0x10001;
 		unsigned char *modulus = NULL, *private = NULL;
 		modulus = malloc(RSA_KEY_SIZE);
@@ -131,10 +120,10 @@ RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
 		private = malloc(RSA_KEY_SIZE);
 		if (!private)
 			goto err_exit;
-		ret = get_key_from_file(modulus, pub_file, RSA_KEY_SIZE);
+		ret = get_key_from_file(modulus, pub_key, RSA_KEY_SIZE);
 		if (ret)
 			goto err_exit;
-		ret = get_key_from_file(private, private_file, RSA_KEY_SIZE);
+		ret = get_key_from_file(private, private_key, RSA_KEY_SIZE);
 		if (ret)
 			goto err_exit;
 		rs = RSA_new();
@@ -165,22 +154,22 @@ RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
 			rs->dmp1 = BN_new();
 			rs->dmq1 = BN_new();
 			rs->iqmp = BN_new();
-			p = malloc(RSA_KEY_SIZE);
-			q = malloc(RSA_KEY_SIZE);
+			p = malloc(128);
+			q = malloc(128);
 			if (!p || !q)
 				goto err1_exit;
-			memset(p, 0, RSA_KEY_SIZE);
-			memset(q, 0, RSA_KEY_SIZE);
-			ret = get_key_from_file(p, p_file, RSA_KEY_SIZE);
+			memset(p, 0, 128);
+			memset(q, 0, 128);
+			ret = get_key_from_file(p, p_file, 128);
 			if (ret)
 				goto err1_exit;
-			ret = get_key_from_file(q, q_file, RSA_KEY_SIZE);
+			ret = get_key_from_file(q, q_file, 128);
 			if (ret)
 				goto err1_exit;
 
 
-			BN_bin2bn(q, RSA_KEY_SIZE, rs->q);
-			BN_bin2bn(p, RSA_KEY_SIZE, rs->p);
+			BN_bin2bn(q, 128, rs->q);
+			BN_bin2bn(p, 128, rs->p);
 
 			if (!BN_sub(r1, rs->p, BN_value_one()))
 				goto err1_exit;	/* p-1 */
@@ -209,7 +198,7 @@ err_exit:
 		free(modulus);
 		free(private);
 	} else {
-		FILE *fp = fopen(private_file, "r");
+		FILE *fp = fopen(private_key, "r");
 		if (fp == NULL)
 			return NULL;
 		rs = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL);
@@ -225,150 +214,19 @@ err_exit:
 
 }
 
-int get_sign_type(RSA *key)
-{
-	int len;
-
-	if (key == NULL)
-		return VDFS4_SIGN_NONE;
-	len = RSA_size(key);
-	switch (len) {
-		case 128:
-			return VDFS4_SIGN_RSA1024;
-		case 256:
-			return VDFS4_SIGN_RSA2048;
-		default:
-			return VDFS4_SIGN_NONE;
-	}
-}
-
-int get_sign_length(RSA* key)
-{
-	if (key == NULL)
-		return 0;
-	return RSA_size(key);
-}
-
 int sign_rsa(unsigned char *buf, unsigned long buf_len,
 		unsigned char *rsa_hash, RSA *rsa_key,
 		vdfs4_hash_algorithm_func *hash_alg, int hash_len)
 {
 	int ret = 0;
-	unsigned char* hash = malloc(hash_len);
-	if (!hash)
-		return -ENOMEM;
-
-	hash_alg(buf, buf_len, hash);
-	ret = RSA_private_encrypt(hash_len,
+	unsigned char hash[VDFS4_CRYPTED_HASH_LEN];
+	memset(hash, 0, VDFS4_CRYPTED_HASH_LEN);
+	hash_alg(buf, buf_len, hash + VDFS4_CRYPTED_HASH_LEN - hash_len);
+	ret = RSA_private_encrypt(VDFS4_CRYPTED_HASH_LEN,
 			(const unsigned char *)hash,
-			rsa_hash, rsa_key, RSA_PKCS1_PADDING);
-	free(hash);
-	if (ret != RSA_size(rsa_key))
+			rsa_hash, rsa_key, RSA_NO_PADDING);
+	if (ret != VDFS4_CRYPTED_HASH_LEN)
 		return -EINVAL;
-
-	return 0;
-}
-
-/* function gets cur_align align and finds least common multiple
- * of it and predefined encrypted chunk align.
- * Found value is returned back trough cur_align.
- */
-void encrypted_chunk_align(size_t *cur_align, int align_type)
-{
-	size_t t, lcm, a, b, x, y;
-	size_t encrypt_align = (size_t)((align_type == ALIGN_START) ?
-			VDFS4_AES_CHUNK_ALIGN_START :
-			VDFS4_AES_CHUNK_ALIGN_LEN);
-
-	a = *cur_align;
-	b = encrypt_align;
-	if(a == 0)
-		a = 1;
-	if(b == 0)
-		b = 1;
-	x = a;
-	y = b;
-
-	while (b != 0) {
-		t = b;
-		b = a % b;
-		a = t;
-	}
-
-	lcm = (x*y)/a;
-	if(lcm == 1)
-		lcm = 0;
-
-	assert((lcm % encrypt_align) == 0);
-	assert((lcm % x) == 0);
-
-	*cur_align = lcm;
-}
-
-void encrypt_chunk(unsigned char *in, unsigned char *out,
-		unsigned char *nonce, AES_KEY *encryption_key, int size, u64 AES_offset)
-{
-	unsigned char ivec[AES_BLOCK_SIZE];
-	unsigned char ecount[AES_BLOCK_SIZE];
-	unsigned int num;
-
-	if( encryption_key == NULL || in == NULL || out == NULL || nonce == NULL )
-	{
-		printf("decrypt_chunk() - invalid parameters.\n");
-		return;
-	}
-
-	memset(ecount, 0, AES_BLOCK_SIZE);
-	memcpy(ivec, nonce, VDFS4_AES_NONCE_SIZE);
-	memcpy(ivec + VDFS4_AES_NONCE_SIZE, &AES_offset, AES_BLOCK_SIZE - VDFS4_AES_NONCE_SIZE);
-
-	while (size >= AES_BLOCK_SIZE) {
-		num = 0;
-		AES_ctr128_encrypt(in, out, AES_BLOCK_SIZE, encryption_key, ivec, ecount, &num);
-		in +=  AES_BLOCK_SIZE;
-		out += AES_BLOCK_SIZE;
-		size -= AES_BLOCK_SIZE;
-	}
-	if (size > 0) {
-		num = 0;
-		AES_ctr128_encrypt(in, out, size, encryption_key,   ivec, ecount, &num);
-	}
-}
-
-int read_encryption_key(struct vdfs4_sb_info *sbi, char *filename)
-{
-	FILE *file;
-	unsigned int bytes;
-	if( filename == NULL )
-	{
-		printf("Invalid args. Filename is null\n");
-		return -ENOENT;
-	}
-
-	file = fopen(filename, "r");
-	if( file == NULL )
-	{
-		printf("Error while opening file: %s\n", filename);
-		return -ENOENT;
-	}
-	bytes = fread((void *)sbi->raw_encryption_key,
-			sizeof(unsigned char), AES_BLOCK_SIZE, file);
-
-	if( bytes != AES_BLOCK_SIZE )
-	{
-		printf("Password length is insufficient\n");
-		fclose(file);
-		return -EINVAL;
-	}
-	sbi->aes_key = malloc(sizeof(*sbi->aes_key));
-	if(!sbi->aes_key) {
-		log_error("Failed to allocate memory fo sbi's AES key");
-		fclose(file);
-		return -ENOMEM;
-	}
-
-	AES_set_encrypt_key(sbi->raw_encryption_key, 128, sbi->aes_key);
-	fclose(file);
 
 	return 0;
 }

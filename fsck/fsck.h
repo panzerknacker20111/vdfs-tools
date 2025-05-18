@@ -63,7 +63,7 @@
 #include "../include/btree.h"
 #include "../include/cattree.h"
 #include "../include/vdfs4.h"
-#include "../include/bitmap.h"
+#include "../lib/bitmap.h"
 #include "../include/exttree.h"
 #include "../include/compress.h"
 

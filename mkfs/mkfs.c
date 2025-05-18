@@ -29,14 +29,9 @@
 #include <dirent.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/fs.h>
-#include <zlib.h>
-#include <signal.h>
-#include <crypto_lock.h>
-#include <execinfo.h>
 
 unsigned int vdfs4_debug_mask = 0
 		/*+ VDFS4_DBG_INO*/
@@ -51,6 +46,258 @@ const unsigned int vdfs_tools_mode = 0
 		/*+ VDFS4_TOOLS_MULTITHREAD*/
 		+ VDFS4_TOOLS_GET_BNODE_FROM_MEM
 		;
+int copy_file_to_dlink(struct vdfs4_sb_info *sbi,
+		struct vdfs4_catalog_dlink_record *dl_rec, char *path)
+{
+	int ret = 0;
+	int dl_fd = 0;
+	int src_file = 0;
+	char *data = NULL;
+	off_t dl_offset, src_file_size;
+	int need_to_read = 0, read_real = 0;
+	int buf_size = 0;
+	__u64 begin, dl_inode;
+
+	struct list_head *data_ranges_list = NULL;
+	if (dl_rec->common.flags & (1 << SIGNED_DLINK)) {
+		if (!sbi->dl_inf.dlink_signed) {
+			pid_t pid = getpid();
+			int path_len = strlen(sbi->tmpfs_dir)
+						+ VDFS4_FILE_NAME_LEN;
+			sbi->dl_inf.dl_name_signed = malloc(path_len);
+			if (!sbi->dl_inf.dl_name_signed)
+				return -ENOMEM;
+			memset(sbi->dl_inf.dl_name_signed, 0,
+					path_len);
+			snprintf(sbi->dl_inf.dl_name_signed, path_len,
+					"%s/dl_signed_%lu", sbi->tmpfs_dir,
+					(long unsigned)pid);
+			sbi->dl_inf.dlink_file_signed =
+					open(sbi->dl_inf.dl_name_signed,
+					O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
+					S_IRUSR | S_IWUSR);
+			if (sbi->dl_inf.dlink_file_signed < 0) {
+				ret = -errno;
+				log_error("Can't create file dlink_signed:"
+						" %s", strerror(errno));
+				return ret;
+			}
+			sbi->dl_inf.dlink_signed =
+					get_free_inode_n(sbi, 1);
+			INIT_LIST_HEAD(&sbi->dl_signed_data_ranges);
+		}
+		data_ranges_list = &sbi->dl_signed_data_ranges;
+		dl_fd = sbi->dl_inf.dlink_file_signed;
+		dl_inode = sbi->dl_inf.dlink_signed;
+		dl_rec->common.flags &= ~((1 << VDFS4_COMPRESSED_FILE) |
+				(1 << VDFS4_AUTH_FILE) |
+				(1 << SIGNED_DLINK));
+	} else if (dl_rec->common.flags & (1 << VDFS4_READ_ONLY_AUTH)) {
+		if (!sbi->dl_inf.dlink_file_ro_auth) {
+			pid_t pid = getpid();
+			int path_len = strlen(sbi->tmpfs_dir)
+						+ VDFS4_FILE_NAME_LEN;
+			sbi->dl_inf.dl_name_ro_auth = malloc(path_len);
+			if (!sbi->dl_inf.dl_name_ro_auth)
+				return -ENOMEM;
+			memset(sbi->dl_inf.dl_name_ro_auth, 0,
+					path_len);
+			snprintf(sbi->dl_inf.dl_name_ro_auth, path_len,
+					"%s/dl_roauth_%lu", sbi->tmpfs_dir,
+					(long unsigned)pid);
+			sbi->dl_inf.dlink_file_ro_auth =
+					open(sbi->dl_inf.dl_name_ro_auth,
+					O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
+					S_IRUSR | S_IWUSR);
+			if (sbi->dl_inf.dlink_file_ro_auth < 0) {
+				ret = -errno;
+				log_error("Can't create file dlink_comp_enc:"
+						" %s", strerror(errno));
+				return ret;
+			}
+			sbi->dl_inf.dlink_inode_ro_auth =
+					get_free_inode_n(sbi, 1);
+			INIT_LIST_HEAD(&sbi->dl_ro_auth_data_ranges);
+		}
+		data_ranges_list = &sbi->dl_ro_auth_data_ranges;
+		dl_fd = sbi->dl_inf.dlink_file_ro_auth;
+		dl_inode = sbi->dl_inf.dlink_inode_ro_auth;
+		dl_rec->common.flags &= ~((1 << VDFS4_COMPRESSED_FILE) |
+				(1 << VDFS4_AUTH_FILE) |
+				(1 << VDFS4_READ_ONLY_AUTH));
+	} else if (dl_rec->common.flags & (1 << VDFS4_AUTH_FILE)) {
+		if (!sbi->dl_inf.dlink_file_auth) {
+			pid_t pid = getpid();
+			int path_len = strlen(sbi->tmpfs_dir)
+							+ VDFS4_FILE_NAME_LEN;
+			sbi->dl_inf.dl_name_auth = malloc(path_len);
+			if (!sbi->dl_inf.dl_name_auth)
+				return -ENOMEM;
+			memset(sbi->dl_inf.dl_name_auth, 0,
+							path_len);
+			snprintf(sbi->dl_inf.dl_name_auth, path_len,
+					"%s/dl_auth_%lu", sbi->tmpfs_dir,
+					(long unsigned)pid);
+			sbi->dl_inf.dlink_file_auth =
+					open(sbi->dl_inf.dl_name_auth,
+					O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
+					S_IRUSR | S_IWUSR);
+			if (sbi->dl_inf.dlink_file_auth < 0) {
+				ret = -errno;
+				log_error("Can't create file dlink_comp_enc:"
+						" %s", strerror(errno));
+				return ret;
+			}
+			sbi->dl_inf.dlink_inode_auth =
+					get_free_inode_n(sbi, 1);
+			INIT_LIST_HEAD(&sbi->dl_auth_data_ranges);
+		}
+		data_ranges_list = &sbi->dl_auth_data_ranges;
+		dl_fd = sbi->dl_inf.dlink_file_auth;
+		dl_inode = sbi->dl_inf.dlink_inode_auth;
+		dl_rec->common.flags &= ~((1 << VDFS4_COMPRESSED_FILE) |
+				(1 << VDFS4_AUTH_FILE));
+	} else if (dl_rec->common.flags & (1 << VDFS4_COMPRESSED_FILE)) {
+		if (!sbi->dl_inf.dlink_file_comp_fd) {
+			pid_t pid = getpid();
+			int path_len = strlen(sbi->tmpfs_dir)
+							+ VDFS4_FILE_NAME_LEN;
+			sbi->dl_inf.dl_name_comp = malloc(path_len);
+			if (!sbi->dl_inf.dl_name_comp)
+				return -ENOMEM;
+			memset(sbi->dl_inf.dl_name_comp, 0, path_len);
+			snprintf(sbi->dl_inf.dl_name_comp, path_len,
+					"%s/dl_comp_%lu", sbi->tmpfs_dir,
+					(long unsigned)pid);
+			sbi->dl_inf.dlink_file_comp_fd = open(
+					sbi->dl_inf.dl_name_comp,
+					O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
+					S_IRUSR | S_IWUSR);
+			if (sbi->dl_inf.dlink_file_comp_fd < 0) {
+				ret = -errno;
+				log_error("Can't create file dlink_comp:"
+						" %s", strerror(errno));
+				return ret;
+			}
+			sbi->dl_inf.dlink_inode_comp = get_free_inode_n(sbi, 1);
+			INIT_LIST_HEAD(&sbi->dl_comp_data_ranges);
+		}
+		data_ranges_list = &sbi->dl_comp_data_ranges;
+		dl_fd = sbi->dl_inf.dlink_file_comp_fd;
+		dl_inode = sbi->dl_inf.dlink_inode_comp;
+		dl_rec->common.flags &= ~(1 << VDFS4_COMPRESSED_FILE);
+	} else {
+		if (!sbi->dl_inf.dlink_file_fd) {
+			pid_t pid = getpid();
+			int path_len = strlen(sbi->tmpfs_dir)
+							+ VDFS4_FILE_NAME_LEN;
+			sbi->dl_inf.dl_name = malloc(path_len);
+			if (!sbi->dl_inf.dl_name)
+				return -ENOMEM;
+			memset(sbi->dl_inf.dl_name, 0, path_len);
+			snprintf(sbi->dl_inf.dl_name, path_len,
+					"%s/dl_%lu", sbi->tmpfs_dir,
+					(long unsigned)pid);
+			sbi->dl_inf.dlink_file_fd = open(sbi->dl_inf.dl_name,
+					O_CREAT | O_EXCL | O_RDWR | O_TRUNC,
+					S_IRUSR | S_IWUSR);
+			if (sbi->dl_inf.dlink_file_fd < 0) {
+				ret = -errno;
+				log_error("Can't create file dlink:"
+						" %s", strerror(errno));
+				return ret;
+			}
+			sbi->dl_inf.dlink_inode = get_free_inode_n(sbi, 1);
+			INIT_LIST_HEAD(&sbi->dl_data_ranges);
+		}
+		data_ranges_list = &sbi->dl_data_ranges;
+		dl_fd = sbi->dl_inf.dlink_file_fd;
+		dl_inode = sbi->dl_inf.dlink_inode;
+	}
+	buf_size = sbi->block_size;
+	data = malloc(buf_size);
+	if (!data) {
+		log_info("Mkfs can't allocate enough memory");
+		return -ENOMEM;
+	}
+	memset(data, 0, buf_size);
+	ret = get_file_size(dl_fd, &dl_offset);
+	if (ret)
+		goto exit;
+
+	dl_rec->data_offset = dl_offset;
+	dl_rec->data_inode = dl_inode;
+	lseek(dl_fd, dl_offset, SEEK_SET);
+	/*If symlink*/
+	if (S_ISLNK(dl_rec->common.file_mode)) {
+		int r = readlink(path, data, buf_size);
+		if (r < 0) {
+			log_error("Can't read link %s - %s", path,
+					strerror(errno));
+			free(data);
+			return -errno;
+		}
+		if (write(dl_fd, data, r) != r) {
+			log_error("%s %s %s", "Can't copy symlink - ", path,
+					strerror(errno));
+			ret = -errno;
+		}
+		dl_rec->data_length = r;
+		free(data);
+		return ret;
+	}
+
+	/*Regular file*/
+	src_file = open(path, O_RDONLY);
+	if (src_file < 0) {
+		ret = -errno;
+		log_error("%s %s %s", "Can't open file - ",
+				path, strerror(errno));
+		free(data);
+		return ret;
+	}
+
+	ret = get_file_size(src_file, &src_file_size);
+	if (ret)
+		goto exit;
+
+	dl_rec->data_length = src_file_size;
+
+	while (src_file_size) {
+		need_to_read = (src_file_size > buf_size) ? buf_size :
+				src_file_size;
+		memset(data, 0, buf_size);
+		read_real = read(src_file, data, need_to_read);
+		if (read_real == -1) {
+			ret = -errno;
+			log_error("%s %s %s", "Can't read file - ", path,
+					strerror(errno));
+			goto exit;
+		}
+		if (write(dl_fd, data, read_real) != read_real) {
+			ret = -errno;
+			log_error("%s %s %s", "Can't copy file - ", path,
+					strerror(errno));
+			goto exit;
+		}
+		src_file_size -= read_real;
+	}
+
+	begin = 0;
+	begin = find_data_duplicate(data_ranges_list,
+			dl_fd, dl_fd, dl_rec->data_offset,
+			dl_rec->data_length);
+	if (begin) {
+		dl_rec->data_offset = begin;
+		ftruncate(dl_fd, dl_offset);
+	} else
+		add_data_range(sbi, data_ranges_list, dl_rec->data_offset,
+				dl_rec->data_length);
+exit:
+	free(data);
+	close(src_file);
+	return ret;
+}
 
 void clear_data_range_list(struct list_head *data_range_list)
 {
@@ -62,6 +309,10 @@ void clear_data_range_list(struct list_head *data_range_list)
 		free(dr);
 	}
 }
+
+
+
+
 
 __u64 find_file_duplicate(struct vdfs4_sb_info *sbi, char *path)
 {
@@ -140,10 +391,15 @@ int insert_hlinks_data(struct vdfs4_sb_info *sbi, u64 *file_offset_abs)
 				list->new_ino_n, NULL, 0, VDFS4_BNODE_MODE_RW);
 		if (IS_ERR(record))
 			return -ENOMEM;
-
 		file_rec = record->val;
-		file_rec->common.flags &= ~(1 << VDFS4_HLINK_TUNE_TRIED);
-
+		if (record->key->record_type == VDFS4_CATALOG_DLINK_RECORD) {
+			ret = copy_file_to_dlink(sbi,
+					(struct vdfs4_catalog_dlink_record *)
+					file_rec, list->name);
+			if (ret)
+				goto errors;
+			goto next;
+		}
 		if (IS_FLAG_SET(file_rec->common.flags,
 				VDFS4_COMPRESSED_FILE))
 			goto next;
@@ -219,7 +475,7 @@ int insert_hlinks_metadata(struct vdfs4_sb_info *sbi)
 		stat_info.st_nlink = list->links;
 		ret = insert_record(sbi, list->name, NULL, &stat_info,
 				list->new_ino_n, list->new_ino_n,
-				&obj_count);
+				&obj_count, 0);
 		if (ret)
 			break;
 
@@ -246,7 +502,7 @@ int fill_image_metadata(struct vdfs4_sb_info *sbi)
 	if (sbi->root_path != NULL) {
 		log_activity("Fill catalog tree from %s", sbi->root_path);
 		ret = insert_metadata(sbi, sbi->root_path, VDFS4_ROOT_INO,
-				&object_count);
+				&object_count, 0);
 		if (ret)
 			return ret;
 
@@ -298,14 +554,30 @@ int fill_image_data(struct vdfs4_sb_info *sbi)
 		ret = insert_data(sbi, sbi->root_path, VDFS4_ROOT_INO,
 				&file_offset);
 		if (ret) {
-			log_error("Error when insert data(ret:%d)", ret);
+			log_error("Error when insert data - %s",
+					strerror(-ret));
 			return ret;
 		}
 		ret = insert_hlinks_data(sbi, &file_offset);
 		if (ret) {
-			log_error("Error when insert hlinks data(ret:%d)", ret);
+			log_error("Error when insert hlinks data - %s",
+					strerror(-ret));
 			return ret;
 		}
+		ret = copy_dlink_files(sbi);
+		if (ret) {
+			log_error("Error when insert datalinks data - %s",
+					strerror(-ret));
+			return ret;
+		}
+	}
+
+	if ((!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) &&
+		(file_offset + block_to_byte(sbi->snapshot.metadata_size,
+			sbi->block_size)) > sbi->min_image_size) {
+		ret = -ENOSPC;
+		log_error("Size of root dir is more than image size");
+		return ret;
 	}
 
 	return ret;
@@ -329,7 +601,6 @@ int insert_data(struct vdfs4_sb_info *sbi, char *dir_path,
 	int ret = 0;
 	char *path = NULL;
 	struct dirent *data;
-	struct dirent entry;
 	struct vdfs4_cattree_record *record = NULL;
 	struct vdfs4_catalog_file_record *file_rec;
 	if (!sbi->root_path) {
@@ -344,13 +615,10 @@ int insert_data(struct vdfs4_sb_info *sbi, char *dir_path,
 	}
 	file_offset_abs_new = *file_offset_abs;
 
-	/*while ((data = readdir(dir)) != NULL) {*/
-	ret = readdir_r(dir, &entry, &data);
-	while (!ret && data) {
+	while ((data = readdir(dir)) != NULL) {
 		if ((strcmp(data->d_name, ".") == 0) ||
 				(strcmp(data->d_name, "..") == 0))
-			/*continue;*/
-			goto next;
+			continue;
 
 		path = calloc(1, strlen(dir_path) + strlen(data->d_name) + 2);
 		if (!path) {
@@ -436,6 +704,14 @@ int insert_data(struct vdfs4_sb_info *sbi, char *dir_path,
 					sbi->block_size);
 			add_data_range(sbi, &sbi->data_ranges, begin, length);
 			*file_offset_abs = file_offset_abs_new;
+		} else if (record_type == VDFS4_CATALOG_DLINK_RECORD) {
+			struct vdfs4_catalog_dlink_record *dl_rec =
+					(struct vdfs4_catalog_dlink_record *)
+							(record->val);
+			ret = copy_file_to_dlink(sbi, dl_rec, path);
+			if (ret)
+				goto errors;
+
 		} else if (record_type != VDFS4_CATALOG_HLINK_RECORD){
 			ret = -EINVAL;
 			goto errors;
@@ -445,8 +721,6 @@ loop_end:
 		record = NULL;
 		free(path);
 		path = NULL;
-next:
-		ret = readdir_r(dir, &entry, &data);
 	}
 
 	goto exit;
@@ -456,6 +730,37 @@ exit:
 	free(path);
 	closedir(dir);
 	return ret;
+}
+
+
+static int is_dlink(struct vdfs4_dlink_info *dl_inf, __u64 obj_id)
+{
+	return (obj_id == dl_inf->dlink_inode
+		|| obj_id == dl_inf->dlink_inode_comp
+		|| obj_id == dl_inf->dlink_inode_auth
+		|| obj_id == dl_inf->dlink_inode_ro_auth);
+
+}
+
+static int is_compress_to_dlink(struct vdfs4_sb_info *sbi, const char *path)
+{
+	struct list_head *pos, *q;
+	if (!list_empty(&sbi->compress_list))
+		return 0;
+
+
+	list_for_each_safe(pos, q, &sbi->compress_list) {
+		struct install_task *ptr =
+			list_entry(pos, struct install_task, list);
+		if ((strlen(ptr->src_full_path) == strlen(path))
+				&& !strncmp(ptr->src_full_path, path,
+				strlen(path))) {
+			list_del(&ptr->list);
+			free(ptr);
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /*****************************************************************************/
@@ -471,7 +776,7 @@ exit:
  */
 int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
 		struct stat *stat_info, int obj_id, int parent_id,
-		__u64 *obj_count)
+		__u64 *obj_count, int compress_to_dlink)
 {
 
 	int ret = 0;
@@ -483,6 +788,17 @@ int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
 	struct vdfs4_timespec access_time;
 	struct vdfs4_cattree_record *new_record;
 	unsigned int record_type = VDFS4_CATALOG_FILE_RECORD;
+	int chunk_size = 1 << sbi->log_chunk_size;
+
+	if ((S_ISREG(stat_info->st_mode) || S_ISLNK(stat_info->st_mode)) &&
+			(((IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) &&
+				(stat_info->st_size > 0 &&
+						stat_info->st_size < chunk_size))
+						|| compress_to_dlink)
+				&& (!is_dlink(&sbi->dl_inf, (__u64)obj_id))) {
+			record_type = VDFS4_CATALOG_DLINK_RECORD;
+	}
+
 
 	permissions.file_mode = cpu_to_le16(stat_info->st_mode);
 	if (IS_FLAG_SET(sbi->service_flags, ALL_ROOT)) {
@@ -532,9 +848,10 @@ int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
 	}
 
 	if (!S_ISLNK(stat_info->st_mode) &&
-			record_type != VDFS4_CATALOG_HLINK_RECORD) {
+	    record_type != VDFS4_CATALOG_HLINK_RECORD) {
 
-		ret = get_set_xattrs(sbi, path, obj_id);
+		if (!is_dlink(&sbi->dl_inf, (__u64)obj_id))
+			ret = get_set_xattrs(sbi, path, obj_id);
 		if (ret)
 			return ret;
 	}
@@ -548,7 +865,7 @@ int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
 	}
 	vdfs4_fill_cattree_record_value(new_record, items, links,
 		&permissions, creation_time, modification_time,
-		access_time, start, length, sbi->block_size);
+		access_time, start, length, sbi->block_size, compress_to_dlink);
 
 	if ((record_type == VDFS4_CATALOG_FILE_RECORD) &&
 			(S_ISREG(stat_info->st_mode))) {
@@ -557,14 +874,6 @@ int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
 					(1 << TINY_FILE);
 			sbi->tiny_files_count++;
 		}*/
-	}
-
-	/* handle encryption if requested from command line */
-	if(S_ISREG(stat_info->st_mode) && stat_info->st_size != 0) {
-		if(IS_FLAG_SET(sbi->service_flags, ENCRYPT_ALL) ||
-		   (IS_FLAG_SET(sbi->service_flags, ENCRYPT_EXEC) && is_exec_file_path(path))) {
-			VDFS4_CATTREE_FOLDVAL(new_record)->flags |= (1 << VDFS4_ENCRYPTED_FILE);
-		}
 	}
 
 	vdfs4_release_record((struct vdfs4_btree_gen_record *) new_record);
@@ -583,31 +892,29 @@ int insert_record(struct vdfs4_sb_info *sbi, char *path, char *name,
  */
 /******************************************************************************/
 int insert_metadata(struct vdfs4_sb_info *sbi, char *dir_path, int parent_id,
-		__u64 *object_count)
+		__u64 *object_count, int compress_to_dlink)
 {
 	DIR *dir;
 	int ret;
 	char *path = NULL;
 	struct dirent *data;
-	struct dirent entry;
 	struct stat info;
 	int obj_id;
+	int compress_to_dlink_current = compress_to_dlink;
 	__u64 obj_count = 0;
 	ret = 0;
 
 	dir = opendir(dir_path);
 
 	if (dir == NULL) {
-		log_error("Can't open dir %s(err:%d)", dir_path, errno);
+		log_error("Can't open dir %s - %s", dir_path, strerror(errno));
 		return errno;
 	}
 
-	/*while ((data = readdir(dir)) != NULL) {*/
-	ret = readdir_r(dir, &entry, &data);
-	while (!ret && data) {
+	while ((data = readdir(dir)) != NULL) {
 		if ((strcmp(data->d_name, ".") == 0) ||
 				(strcmp(data->d_name, "..") == 0))
-			goto next;
+			continue;
 
 		path = calloc(1, strlen(dir_path) + strlen(data->d_name) + 2);
 		if (!path) {
@@ -619,31 +926,36 @@ int insert_metadata(struct vdfs4_sb_info *sbi, char *dir_path, int parent_id,
 		strncat(path, data->d_name, strlen(data->d_name));
 		ret = lstat(path, &info);
 		if (ret) {
-			log_error("Can't get stat information for %s(err:%d)",
-				  path, errno);
+			log_error("Can't get stat information for %s - %s",
+					path, strerror(errno));
 			goto exit;
 		}
 
 		obj_id = get_free_inode_n(sbi, 1);
-
+		compress_to_dlink_current = compress_to_dlink?
+				compress_to_dlink :
+				is_compress_to_dlink(sbi, path);
 		if (S_ISDIR(info.st_mode)) {
 			/*Found folder*/
 			obj_count = 0;
 			char *xattr_buf = malloc(XATTR_VAL_SIZE);
 			memset(xattr_buf, 0, XATTR_VAL_SIZE);
 			free(xattr_buf);
-			ret = insert_metadata(sbi, path, obj_id, &obj_count);
+			ret = insert_metadata(sbi, path, obj_id, &obj_count,
+					compress_to_dlink_current);
 
 			if (ret)
 				goto exit;
 			ret = insert_record(sbi, path, data->d_name, &info,
-					obj_id, parent_id, &obj_count);
+					obj_id, parent_id, &obj_count,
+					compress_to_dlink_current);
 		} else {
 			sbi->files_count++;
 
 
 			ret = insert_record(sbi, path, data->d_name, &info,
-				obj_id, parent_id, &obj_count);
+				obj_id, parent_id, &obj_count,
+				compress_to_dlink_current);
 
 			if (ret)
 				goto exit;
@@ -651,8 +963,6 @@ int insert_metadata(struct vdfs4_sb_info *sbi, char *dir_path, int parent_id,
 		(*object_count)++;
 		free(path);
 		path = NULL;
-next:
-		ret = readdir_r(dir, &entry, &data);
 	}
 
 
@@ -673,7 +983,13 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	/*sbi->xattrtree.tree.name = subsystem_names[6];
 	sbi->small_area_bitmap.name = subsystem_names[7];
 	sbi->small_area.name = subsystem_names[8];*/
-	if (sbi->max_volume_size && sbi->max_volume_size < MIN_VOLUME_SIZE) {
+#ifdef GIT_BRANCH
+	log_info("git branch: %s", GIT_BRANCH);
+#endif
+#ifdef GIT_HASH
+	log_info("git hash: %s", GIT_HASH);
+#endif
+	if (sbi->image_size && sbi->image_size < MIN_VOLUME_SIZE) {
 		log_error("Can't make file less then %d",
 				MIN_VOLUME_SIZE);
 		return -EINVAL;
@@ -683,14 +999,14 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 
 
 	/* in case of image creation without size set in arguments */
-	if (sbi->max_volume_size == 0) {
-		log_info("Image size is not specified.");
-		sbi->max_volume_size = -1;
-		sbi->min_volume_size = -1;
-	} else {
-		log_info("Image size is %llu", sbi->max_volume_size);
-	}
-
+	if (sbi->image_size == 0) {
+		log_info("Image size is not specified,"
+				" read-only image will be created");
+		SET_FLAG(sbi->service_flags, READ_ONLY_IMAGE);
+		sbi->image_size = -1;
+		sbi->min_image_size = sbi->image_size;
+	} else
+		log_info("Image size is %llu", sbi->image_size);
 	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
 		log_info("Disk operations are in SIMULATE mode");
 
@@ -701,10 +1017,12 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 
 	if (sbi->erase_block_size == 0)
 		sbi->erase_block_size = ERASE_BLOCK_SIZE_DEFAULT;
+	sbi->volume_size_in_erase_blocks =
+		sbi->image_size / sbi->erase_block_size;
 	log_info("Block size = %lu, erase block = %lu, super page = %lu",
 		sbi->block_size, sbi->erase_block_size,
 		sbi->super_page_size);
-	log_info("Disk size in blocks %llu", byte_to_block(sbi->max_volume_size,
+	log_info("Disk size in blocks %llu", byte_to_block(sbi->image_size,
 		sbi->block_size));
 
 	clock_gettime(CLOCK_REALTIME, &cur_time);
@@ -720,6 +1038,8 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	sbi->log_erase_block_size = log2_32(sbi->erase_block_size);
 	sbi->log_super_page_size = log2_32(sbi->super_page_size);
 	sbi->log_block_size = log2_32(sbi->block_size);
+	sbi->total_super_pages_count = sbi->image_size
+		>> sbi->log_super_page_size;
 
 	sbi->files_count = 0;
 	sbi->folders_count = 1; /* root directory */
@@ -727,70 +1047,178 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	sbi->debug_area.first_block = DEBUG_AREA_DEFAULT_START;
 	sbi->debug_area.block_count = DEBUG_AREA_DEFAULT_SIZE;
 
-	sbi->sign_type = get_sign_type(sbi->rsa_key);
-
 	INIT_LIST_HEAD(&sbi->data_ranges);
 
 	return 0;
 }
 
-static int calc_and_add_crc(int file_id)
+
+int copy_dlink_file_to_image(struct vdfs4_sb_info *sbi,
+		char *file_name, __u64 obj_id, unsigned cmd, int *count,
+		int *ret_thread)
 {
-	unsigned char buf[BLOCK_SIZE_DEFAULT]={0,};
-	unsigned int crc=0;
-	struct stat stat;
-	s64 calc_size, read_size;
+	int ret = 0;
+	struct stat stat_info;
+	__u64 obj_count = 0, file_start = 0;
+	u64 file_offset = 0;
+	struct install_task ptr;
+	ret = lstat(file_name, &stat_info);
+	if (ret)
+		return ret;
+	ret = insert_record(sbi, file_name, NULL, &stat_info,
+			obj_id, obj_id, &obj_count, 0);
+	if (ret)
+		return ret;
+	if (cmd & CMD_COMPRESS) {
+		memset(&ptr, 0, sizeof(struct install_task));
+		ptr.compress_type = sbi->dl_inf.compression_type;
+		ptr.cmd = cmd;
+		strncat(ptr.src_full_path, file_name, VDFS4_FULL_PATH_LEN);
 
-	lseek(file_id, 0, SEEK_SET);
-	if (fstat(file_id, &stat)) {
-		return errno;
-	}
-	calc_size = stat.st_size;
-	crc = crc32(0L, Z_NULL, 0);
-	while (calc_size > 0 && (read_size=read(file_id, buf, BLOCK_SIZE_DEFAULT))) {
-		if (-1 == read_size) {
-			return errno;
+		ptr.src_fname = file_name;
+		memcpy(ptr.dst_parent_dir, "/", strlen("/"));
+		int tnum = get_free_file_thread();
+		pthread_mutex_lock(&thread_file[tnum].compr_file_mutex);
+		memcpy(thread_file[tnum].ptr, &ptr,
+				sizeof(struct install_task));
+		thread_file[tnum].parent_id = obj_id;
+		thread_file[tnum].sbi = sbi;
+		thread_file[tnum].has_data = 1;
+		thread_file[tnum].error = ret_thread;
+		pthread_mutex_lock(&files_count_mutex);
+		(*count)++;
+		thread_file[tnum].count = count;
+		pthread_mutex_unlock(&files_count_mutex);
+		pthread_cond_signal(&thread_file[tnum].compr_file_cond);
+		pthread_mutex_unlock(&thread_file[tnum].compr_file_mutex);
+	} else {
+		pthread_mutex_lock(&write_file_mutex);
+		file_start = get_metadata_size(sbi);
+		file_offset = 0;
+		ret = copy_file_to_image(sbi, file_name, &file_offset);
+		if (ret) {
+			pthread_mutex_unlock(&write_file_mutex);
+			return ret;
 		}
-		crc = crc32(crc, (const unsigned char*)buf, read_size);
-		calc_size -= read_size;
+		struct vdfs4_cattree_record *rec = vdfs4_cattree_find(
+				&sbi->cattree.vdfs4_btree, obj_id, NULL, 0,
+				VDFS4_BNODE_MODE_RW);
+		if (IS_ERR(rec)) {
+			pthread_mutex_unlock(&write_file_mutex);
+			return PTR_ERR(rec);
+		}
+		fork_init(&((struct vdfs4_catalog_file_record *)
+				(rec->val))->data_fork, file_start,
+				stat_info.st_size, sbi->block_size);
+		vdfs4_release_record((struct vdfs4_btree_gen_record *)rec);
+		pthread_mutex_unlock(&write_file_mutex);
 	}
-
-	memset(buf, 0x00, sizeof(char) * BLOCK_SIZE_DEFAULT);
-	*((unsigned int*)buf) = VDFS_IMG_VERIFY_MAGIC;	//magic
-	*(((unsigned int*)buf)+1) = crc;	//crc
-	if (write(file_id, buf, BLOCK_SIZE_DEFAULT) != BLOCK_SIZE_DEFAULT)
-		return errno;
-	return 0;
+	return ret;
 }
 
-/**
- * @brief Function fill mkfs verification magic for update verification.
- * @param [in] sbi		Superblock runtime structure
- * @param [in] magic     special defined value for verification
- * @return 0 on success, or error code
- */
-static int fill_verification_magic(struct vdfs4_sb_info *sbi, unsigned int magic)
+int copy_dlink_files(struct vdfs4_sb_info *sbi)
 {
-	int fd = sbi->disk_op_image.file_id;
-	off_t current_pos;
-	struct vdfs_dbg_area_map dbg_area;
-	current_pos = lseek(fd, 0, SEEK_CUR);
-	memset(&dbg_area, 0x00, sizeof(dbg_area));
-	memcpy(dbg_area.magic, VDFS_DBG_AREA_MAGIC, sizeof(dbg_area.magic));
-	dbg_area.dbgmap_ver = VDFS_DBG_AREA_VER;
-	dbg_area.dbg.dbg_info.verify_result = magic;
-	if (VDFS_DBG_AREA_OFFSET != lseek(fd, VDFS_DBG_AREA_OFFSET, SEEK_SET)) {
-		log_error("failed to seek for fill start magic(errno:%d)", errno);
-		return -errno;
+	int ret = 0, ret_thread = 0;
+	int count = 0;
+	if (sbi->dl_inf.dlink_signed) {
+		ret = copy_dlink_file_to_image(sbi,
+				sbi->dl_inf.dl_name_signed,
+				sbi->dl_inf.dlink_signed,
+				CMD_AUTH | CMD_COMPRESS | CMD_DLINK,
+				&count, &ret_thread);
+		if (ret)
+			goto exit;
+		wait_finish(&count);
 	}
-	if (sizeof(dbg_area)!=write(fd, &dbg_area, sizeof(dbg_area))) {
-		log_error("failed to write for debug area(errno:%d)\n", errno);
-		return -errno;
+	if (sbi->dl_inf.dlink_inode_ro_auth) {
+		ret = copy_dlink_file_to_image(sbi,
+				sbi->dl_inf.dl_name_ro_auth,
+				sbi->dl_inf.dlink_inode_ro_auth,
+				CMD_AUTH | CMD_COMPRESS, &count, &ret_thread);
+		if (ret)
+			goto exit;
+		wait_finish(&count);
 	}
-	if (current_pos != lseek(fd, current_pos, SEEK_SET)) {
-		log_error("failed to recover fpos(errno:%d)\n", errno);
-		return -errno;
+	if (sbi->dl_inf.dlink_inode_auth) {
+		ret = copy_dlink_file_to_image(sbi,
+				sbi->dl_inf.dl_name_auth,
+				sbi->dl_inf.dlink_inode_auth,
+				CMD_AUTH | CMD_COMPRESS, &count, &ret_thread);
+		if (ret)
+			goto exit;
+		wait_finish(&count);
 	}
+	if (sbi->dl_inf.dlink_inode_comp) {
+		ret = copy_dlink_file_to_image(sbi, sbi->dl_inf.dl_name_comp,
+				sbi->dl_inf.dlink_inode_comp, CMD_COMPRESS,
+				&count, &ret_thread);
+		if (ret)
+			goto exit;
+		wait_finish(&count);
+	}
+	if (sbi->dl_inf.dlink_inode) {
+		ret = copy_dlink_file_to_image(sbi, sbi->dl_inf.dl_name,
+				sbi->dl_inf.dlink_inode, 0, NULL, NULL);
+		if (ret)
+			goto exit;
+		wait_finish(&count);
+	}
+
+	ret = ret_thread;
+exit:
+	if (sbi->dl_inf.dlink_inode_ro_auth)
+		close(sbi->dl_inf.dlink_file_ro_auth);
+	if (sbi->dl_inf.dlink_inode_auth)
+		close(sbi->dl_inf.dlink_file_auth);
+	if (sbi->dl_inf.dlink_inode_comp)
+		close(sbi->dl_inf.dlink_file_comp_fd);
+	if (sbi->dl_inf.dlink_inode)
+		close(sbi->dl_inf.dlink_file_fd);
+	if (sbi->dl_inf.dlink_signed)
+		close(sbi->dl_inf.dlink_file_signed);
+	return ret;
+}
+
+void remove_dlink_files(struct vdfs4_sb_info *sbi)
+{
+	if (sbi->dl_inf.dl_name_comp) {
+		unlink(sbi->dl_inf.dl_name_comp);
+		free(sbi->dl_inf.dl_name_comp);
+		clear_data_range_list(&sbi->dl_comp_data_ranges);
+	}
+	if (sbi->dl_inf.dl_name) {
+		unlink(sbi->dl_inf.dl_name);
+		free(sbi->dl_inf.dl_name);
+		clear_data_range_list(&sbi->dl_data_ranges);
+	}
+	if (sbi->dl_inf.dl_name_auth) {
+		unlink(sbi->dl_inf.dl_name_auth);
+		free(sbi->dl_inf.dl_name_auth);
+		clear_data_range_list(&sbi->dl_auth_data_ranges);
+	}
+	if (sbi->dl_inf.dl_name_ro_auth) {
+		unlink(sbi->dl_inf.dl_name_ro_auth);
+		free(sbi->dl_inf.dl_name_ro_auth);
+		clear_data_range_list(&sbi->dl_ro_auth_data_ranges);
+	}
+	if (sbi->dl_inf.dl_name_signed) {
+		unlink(sbi->dl_inf.dl_name_signed);
+		free(sbi->dl_inf.dl_name_signed);
+		clear_data_range_list(&sbi->dl_signed_data_ranges);
+	}
+}
+
+int calc_and_add_crc(int file_id)
+{
+	char buf[BLOCK_SIZE_DEFAULT];
+	int error;
+	unsigned int crc = calculate_file_crc(file_id, 1, &error);
+	if (error)
+		return error;
+
+	*((unsigned int *)buf) = crc;
+	if (write(file_id, buf, BLOCK_SIZE_DEFAULT) != BLOCK_SIZE_DEFAULT)
+		return errno;
 	return 0;
 }
 
@@ -799,12 +1227,7 @@ void init_threads(struct vdfs4_sb_info *sbi)
 	int tnum;
 	int ret = 0;
 	int path_len = 0;
-	if (sbi->jobs)
-		processors = sbi->jobs;
-	else
-		processors = sysconf(_SC_NPROCESSORS_ONLN);
-
-	log_activity("Create number of thread : %d ", processors);
+	processors = sysconf(_SC_NPROCESSORS_ONLN);
 
 	thread = malloc(processors * sizeof(struct thread_info));
 	thread_file = malloc(processors * sizeof(struct thread_file_info));
@@ -822,9 +1245,8 @@ void init_threads(struct vdfs4_sb_info *sbi)
 		thread[tnum].thread_num = tnum + 1;
 		thread[tnum].is_free = 1;
 		thread[tnum].in = malloc(1 << sbi->log_chunk_size);
-		thread[tnum].out_size = (1 << sbi->log_chunk_size) +
-				((1 << sbi->log_chunk_size) / 16 + 64 + 3);
-		thread[tnum].out = malloc(thread[tnum].out_size);
+		thread[tnum].out = malloc((1 << sbi->log_chunk_size) +
+				(1 << sbi->log_chunk_size) / 16 + 64 + 3);
 		pthread_mutex_init(&thread[tnum].compress_mutex, NULL);
 		pthread_mutex_init(&thread_file[tnum].write_uncompr_mutex,
 				NULL);
@@ -932,150 +1354,31 @@ void destroy_threads(void)
 
 }
 
-/**
- * @brief Function print used space(unit:KB)
- *  (referencing print_superblock() in fsck_print.c)
- * @param [in] sbi		Superblock runtime structure
- * @return 0 on success, or error code
- */
-static int handle_used_space(struct vdfs4_sb_info *sbi)
-{
-	struct vdfs4_extended_super_block esb = sbi->esb;
-	struct vdfs4_subsystem_data *mehs_subs =
-		&(sbi->meta_hashtable.subsystem);
-	long long unsigned int used_block;
-	uint64_t used_size;
-	int ret = 0;
-
-	if (!(IS_FLAG_SET(sbi->service_flags, IMAGE)))
-		return ret;
-
-	/* Because only one struct vdfs4_extent is made during initial image creation,
-	    it's enough to refer first entry in this time */
-	used_block = le64_to_cpu(esb.meta[0].length)
-		+ le64_to_cpu(esb.meta[0].begin);
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)
-	    && sbi->rsa_key) {
-		used_block += mehs_subs->fork.extents[0].block_count;
-	}
-
-	/* crc at the end of image file */
-	used_block += 1;
-
-	used_size = block_to_byte(used_block, sbi->block_size);
-	log_activity("Used size : %llu KB", used_size / 1024);
-
-	if (IS_FLAG_SET(sbi->service_flags, LIMITED_SIZE) &&
-	    used_size > sbi->min_volume_size) {
-		log_error("the image size(-z) is not enough");
-		return -ENOSPC;
-	}
-
-	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
-		return ret;
-
-	/* make suitable image size */
-	if (IS_FLAG_SET(sbi->service_flags, NO_STRIP_IMAGE))
-		ret = ftruncate(sbi->disk_op_image.file_id,
-				sbi->max_volume_size);
-	else
-		ret = ftruncate(sbi->disk_op_image.file_id, used_size);
-
-	return ret;
-}
-
-/**
- * @brief set default option values in sb_info (for vdfs4-tools unique part)
- * @param [in] sbi Superblock runtime structure
- */
-static void set_default_opt_values(struct vdfs4_sb_info *sbi)
-{
-	/* minimum compression ratio */
-	sbi->min_space_saving_ratio = 25;
-}
-
-static void sig_handler(int signo)
-{
-	void *array[10];
-	size_t size;
-
-	log_error("[%3us] mkfs.vdfs receive %d signal!!!",
-		  get_elapsed_time(), signo);
-
-	size = backtrace(array, 10);
-	log_error("+------ backtrace(%2d,%2d) ------+", signo, size);
-	backtrace_symbols_fd(array, size, STDERR_FILENO);
-	log_error("+------------------------------+");
-	fflush(stdout);
-	fflush(stderr);
-
-	signal(signo, SIG_DFL);
-	raise(signo);
-}
-
 int main(int argc, char *argv[])
 {
-	int ret = 0, i;
+	int ret = 0;
 	struct vdfs4_sb_info sbi;
 	struct list_head install_task_list;
 
-	/* for setting process start time. */
-	get_elapsed_time();
-
-	print_version();
 	INIT_LIST_HEAD(&install_task_list);
 	INIT_LIST_HEAD(&sbi.data_ranges);
 	memset(&sbi, 0, sizeof(sbi));
-	INIT_LIST_HEAD(&sbi.prof_data);
-
-	/* regist signal handler for alarm */
-	for (i = SIGHUP; i < SIGRTMAX ; i++)
-		signal(i, sig_handler);
-
-	ret = init_crypto_lock();
-	if (ret)
-		goto err_init_crypto_lock;
-
-	set_default_opt_values(&sbi);
+		print_version();
+	INIT_LIST_HEAD(&sbi.compress_list);
 	ret = parse_cmd(argc, argv, &sbi);
 	if (ret)
 		goto err_before_open;
-
-	log_activity("mkfs.vdfs begin");
 	if (!IS_FLAG_SET(sbi.service_flags, IMAGE))
 		ret = open_disk(&sbi);
+
 	else
 		ret = vdfs4_create_image(sbi.file_name, &sbi);
-	if (ret) {
-		log_error("mkfs.vdfs tool open failed.(errno:%d)(%d)\n",
-				errno, IS_FLAG_SET(sbi.service_flags, IMAGE));
+
+	if (ret)
 		goto err_before_open;
-	}
-
 	ret = init_sb_info(&sbi);
-	if (ret) {
-		log_error("mkfs.vdfs failed to sb init.\n");
+	if (ret)
 		goto err_exit;
-	}
-
-	if (!IS_FLAG_SET(sbi.service_flags, IMAGE)) {
-		ret = discard_volume(&sbi);
-		if (ret)
-			goto err_exit;
-	}
-
-	ret = flush_debug_area(&sbi);
-	if (ret) {
-		goto err_exit;
-	}
-
-	// write special magic at first for guaranteeing mkfs finish
-	if (!IS_FLAG_SET(sbi.service_flags,IMAGE) &&
-		!IS_FLAG_SET(sbi.service_flags, SIMULATE)) {
-		ret = fill_verification_magic(&sbi, VDFS_DBG_VERIFY_START);
-		if (ret)
-			goto err_exit;
-	}
 
 	ret = vdfs4_init_btree_caches();
 	if (ret) {
@@ -1084,10 +1387,6 @@ int main(int argc, char *argv[])
 	}
 
 	ret = init_snapshot(&sbi);
-	if (ret)
-		goto err_space_manager;
-
-	ret = init_hashtable(&sbi);
 	if (ret)
 		goto err_space_manager;
 
@@ -1114,14 +1413,7 @@ int main(int argc, char *argv[])
 		goto err_xattr_tree;
 
 	if (sbi.squash_list_file) {
-		//"-q config_file" param case
-		ret = preprocess_sq_tasklist(&sbi, &install_task_list,
-				sbi.squash_list_file);
-		if (ret)
-			goto err_squashfs;
-	} else if (sbi.compr_type) {
-		//"-c compr_type" param case.
-		ret = preprocess_sq_tasklist(&sbi, &install_task_list, NULL);
+		ret = preprocess_sq_tasklist(&sbi, &install_task_list);
 		if (ret)
 			goto err_squashfs;
 	}
@@ -1162,6 +1454,8 @@ int main(int argc, char *argv[])
 		ret = place_on_volume_subsystem(&sbi, &sbi.inode_bitmap);
 		if (ret)
 			goto err_destroy_all;
+	} else {
+		SET_FLAG(sbi.service_flags, IMAGE_CRC32);
 	}
 
 	ret = place_on_volume_subsystem(&sbi, &sbi.cattree.tree);
@@ -1192,20 +1486,18 @@ int main(int argc, char *argv[])
 	ret = flush_subsystem_tree(&sbi, &sbi.xattrtree);
 	if (ret)
 		goto err_destroy_all;
+
+	ret = flush_debug_area(&sbi);
+	if (ret)
+		goto err_destroy_all;
 	ret = flush_snapshot(&sbi);
 	if (ret)
 		goto err_destroy_all;
-
 	if (!IS_FLAG_SET(sbi.service_flags, READ_ONLY_IMAGE)) {
 		ret = flush_subsystem(&sbi, &sbi.space_manager_info.subsystem);
 		if (ret)
 			goto err_destroy_all;
-	} else if (sbi.rsa_key) {
-		ret = flush_hashtable(&sbi);
-		if (ret)
-			goto err_destroy_all;
 	}
-
 	ret = prepare_superblocks(&sbi);
 	if (ret)
 		goto err_destroy_all;
@@ -1213,28 +1505,10 @@ int main(int argc, char *argv[])
 	if (ret)
 		goto err_destroy_all;
 
-	ret = handle_used_space(&sbi);
-	if (ret)
-		goto err_destroy_all;
-
-	if (!IS_FLAG_SET(sbi.service_flags, SIMULATE)) {
-		//Do sync
-		if (fsync(sbi.disk_op_image.file_id)) {
-			log_error("failed to fsync (err:%d)\n", errno);
+	if (IS_FLAG_SET(sbi.service_flags, IMAGE_CRC32)) {
+		ret = calc_and_add_crc(sbi.disk_op_image.file_id);
+		if (ret)
 			goto err_destroy_all;
-		}
-
-		if (IS_FLAG_SET(sbi.service_flags, IMAGE)) {
-			//write CRC of [0 ~ 'file size-4K']
-			ret = calc_and_add_crc(sbi.disk_op_image.file_id);
-			if (ret)
-				goto err_destroy_all;
-		} else {
-			//write finish special magic
-			ret = fill_verification_magic(&sbi, VDFS_DBG_VERIFY_MKFS);
-			if (ret)
-				goto err_destroy_all;
-		}
 	}
 
 err_destroy_all:
@@ -1243,9 +1517,12 @@ err_destroy_all:
 	destroy_threads();
 	if (!list_empty(&sbi.data_ranges))
 		clear_data_range_list(&sbi.data_ranges);
+	remove_dlink_files(&sbi);
 err_squashfs:
 	if (!list_empty(&install_task_list))
 		clear_install_task_list(&install_task_list);
+	if (!list_empty(&sbi.compress_list))
+		clear_install_task_list(&sbi.compress_list);
 err_xattr_tree:
 	btree_destroy_tree(&sbi.xattrtree);
 err_ext_tree:
@@ -1256,22 +1533,17 @@ err_inode_id_alloc:
 	destroy_inode_id_alloc(&sbi);
 err_space_manager:
 	destroy_snapshot(&sbi);
-	destroy_hashtable(&sbi);
 	destroy_space_manager(&sbi);
 	if (sbi.dump_file)
 		fclose(sbi.dump_file);
 	close_disk(&sbi);
 	vdfs4_destroy_btree_caches();
 err_exit:
-	if (ret == 0) {
-		log_activity("mkfs.vdfs end");
+	if (ret == 0)
 		log_info("Finished successfully");
-	}
 	else {
 		remove_image_file(&sbi);
-		if (ret == -ENOSPC)
-			log_error("Mkfs can't allocate enough disk space");
-		log_error("mkfs.vdfs was failed...!!");
+		log_info("Finished unsuccessfully");
 	}
 err_before_open:
 	if (sbi.squash_list_file)
@@ -1280,8 +1552,5 @@ err_before_open:
 		RSA_free(sbi.rsa_key);
 		CRYPTO_cleanup_all_ex_data();
 	}
-	free(sbi.aes_key);
-	destroy_crypto_lock();
-err_init_crypto_lock:
 	return ret;
 }

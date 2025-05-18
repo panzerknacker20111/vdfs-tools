@@ -42,13 +42,6 @@ enum logger_level {
 void set_logger_verbosity(const enum logger_level value);
 
 /**
- * @brief Log message with note verbosity.
- * @param [in] format NULL terminated string with message.
- * @return void
- */
-void log_note(const char *format, ...);
-
-/**
  * @brief Log message with error verbosity.
  * @param [in] format NULL terminated string with message.
  * @return void
