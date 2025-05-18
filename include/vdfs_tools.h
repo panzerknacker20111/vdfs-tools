@@ -414,6 +414,8 @@ struct vdfs4_sb_info {
 	struct vdfs4_timespec timestamp;
 	/* minimal image size in bytes */
 	u_int64_t min_image_size;
+	/** Filesystem Volume size in bytes (min) */
+	u_int64_t min_volume_size;
 	/** Filesystem Volume size in bytes (max) */
 	u_int64_t max_volume_size;
 	/* normal image size */
