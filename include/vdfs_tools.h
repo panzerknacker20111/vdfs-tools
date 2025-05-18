@@ -386,6 +386,7 @@ struct vdfs4_sb_info {
 	struct vdfs4_btree       *extents_tree;
 	struct vdfs4_btree       *xattr_tree;
 
+	__u8 sign_type;
 /*---------------------------- vdfs4-tools unique part ------------------------*/
 	u_int64_t first_sb_block;
 	u_int64_t first_debug_area_block;
