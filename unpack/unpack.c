@@ -715,9 +715,7 @@ int create_decompress_file(struct vdfs4_sb_info *sbi, char *name,
 		goto close_tmp;
 	}
 
-	ret = decode_file(gathered_name, dst_fd,
-			file_rec->common.flags & (1 << VDFS4_COMPRESSED_FILE),
-			&flags);
+	ret = decode_file(gathered_name, dst_fd, file_rec, file_rec->common.flags & (1 << VDFS4_COMPRESSED_FILE), &flags);
 	file_rec->common.flags |= flags;
 
 	close(dst_fd);
