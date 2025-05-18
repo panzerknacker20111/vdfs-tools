@@ -1,0 +1,20 @@
+name: Makefile CI
+
+on:
+  push:
+    branches: [ "legacy_0010" ]
+  pull_request:
+    branches: [ "legacy_0010" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+    - name: Install dependencies
+      run: make unit_tests
+
+    - name: Run Make All
+      run: make all
