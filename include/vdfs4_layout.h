@@ -396,7 +396,8 @@ struct vdfs4_super_block {
 /*000*/ __u8 signature[4];		/* VDFS4 */
 	/** vdfs4 layout version **/
 	__u8 layout_version[4];
-
+    	char mkfs_git_branch[64];
+    	char mkfs_git_hash[64];
 	/* maximum blocks count on volume */
 	__le64 maximum_blocks_count;
 
@@ -527,7 +528,10 @@ struct vdfs4_superblock {
 	struct vdfs4_super_block superblock;
 	struct vdfs4_extended_super_block ext_superblock;
 };
-
+struct old_vdfs4_super_block {
+    char mkfs_git_branch[64];
+    char mkfs_git_hash[64];
+};
 #define VDFS4_REFORMAT_HISTORY_ITEM_MAGIC "fmth"
 
 struct vdfs4_reformat_history {
