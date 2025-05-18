@@ -452,6 +452,7 @@ struct vdfs4_sb_info {
 	/* Profiling data (vdfs-squeeze) */
 	char *profiling_data_path;
 	struct list_head prof_data;
+	struct vdfs4_dlink_info dl_inf;
 };
 
 struct profiled_file {
