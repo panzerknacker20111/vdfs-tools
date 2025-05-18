@@ -54,7 +54,7 @@ struct vdfs4_bnode *vdfs4_get_bnode_from_vol(struct vdfs4_btree *btree,
 	int ret = 0;
 	int magic_len = 3;
 	u_int64_t bnode_begining_pos;
-	u64 nd_iblock;
+	__u32 nd_iblock;
 	int tree_ino = 0;
 
 	struct vdfs4_bnode *bnode;

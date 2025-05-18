@@ -1,4 +1,3 @@
-TOOLS_VERSION="VDCRC"
 CC = gcc
 TARGET = vdcrc32
 
@@ -10,7 +9,6 @@ INCLUDES = ./../include
 
 CFLAGS += -DUSER_SPACE
 CFLAGS += $(addprefix -I,$(INCLUDES))
-CFLAGS += -DTOOLS_VERSION=\"$(TOOLS_VERSION)\"
 
 LDFLAGS = -static
 

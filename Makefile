@@ -6,8 +6,8 @@
 ##########################################################################
 #-------------------------------------------------------------------------
 MAJ_VER=1
-MIN_VER=43
-DATE=191204 #YYMMDD
+MIN_VER=15
+DATE=171127 #YYMMDD
 #-------------------------------------------------------------------------
 TOOLS_VERSION="$(strip $(MAJ_VER)).$(strip $(MIN_VER))-$(strip $(DATE))"
 ##########################################################################
@@ -42,17 +42,6 @@ CFLAGS += -D_FILE_OFFSET_BITS=64
 
 ifdef VDFS4_NO_WARN
 	CFLAGS += -Werror
-endif
-
-ifeq ($(host),x86_32)
-	CROSS_COMPILE=
-	HOST=i686-linux-gnu
-	CFLAGS += -m32
-	SECURE_CFLAGS += -m32
-endif
-ifeq ($(host),x86_64)
-	CROSS_COMPILE=
-	HOST=x86_64-linux-gnu
 endif
 
 CFLAGS += -I$(OPENSSL_DIR)/include
@@ -128,48 +117,38 @@ btrtst: CFLAGS += -DCONFIG_VDFS4_DEBUG_TOOLS_GET_BNODE
 all: mkfs unpack tune fsck info
 
 openssl: $(OPENSSL_PACK)
-	@if [ ! -d $(OPENSSL_DIR) ]; then tar -xf $(OPENSSL_PACK) -C $(OPENSSL_BASE); cd $(OPENSSL_DIR); ./Configure no-shared no-asm linux-elf --cross-compile-prefix=$(CROSS_COMPILE) $(SECURE_CFLAGS); make build_crypto; fi
+	@if [ ! -d $(OPENSSL_DIR) ]; then tar -xvf $(OPENSSL_PACK) -C $(OPENSSL_BASE); cd $(OPENSSL_DIR); ./Configure no-shared no-asm linux-elf --cross-compile-prefix=$(CROSS_COMPILE) $(SECURE_CFLAGS); make build_crypto; fi
 
 zlib: $(ZLIB_ARCH)
-	@if [ ! -d $(ZLIB_DIR) ]; then tar -xf $(ZLIB_ARCH) -C $(ZLIB_BASE); cd $(ZLIB_DIR); env CC=$(CROSS_COMPILE)gcc CFLAGS="$(SECURE_CFLAGS)" ./configure; make; fi
+	@if [ ! -d $(ZLIB_DIR) ]; then tar -xvf $(ZLIB_ARCH) -C $(ZLIB_BASE); cd $(ZLIB_DIR); env CC=$(CROSS_COMPILE)gcc CFLAGS="$(SECURE_CFLAGS)" ./configure; make; fi
 
 lzo: $(LZO_ARCH)
-	@if [ ! -d $(LZOLIB_DIR) ]; then tar -xf $(LZOLIB_ARCH) -C $(LZOLIB_BASE); cd $(LZOLIB_DIR); env CFLAGS="$(SECURE_CFLAGS)" ./configure --host=$(HOST) --target=$(HOST) -q; make src/liblzo2.la; fi
+	@if [ ! -d $(LZOLIB_DIR) ]; then tar -xvf $(LZOLIB_ARCH) -C $(LZOLIB_BASE); cd $(LZOLIB_DIR); env CFLAGS="$(SECURE_CFLAGS)" ./configure --host=$(HOST) --target=$(HOST); make src/liblzo2.la; fi
 
 mkfs: lzo zlib openssl $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY)
-	@$(CC) -g -rdynamic -std=gnu99 -o $(MKFS) $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(SECURE_CFLAGS) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -g -rdynamic -std=gnu99 -o $(MKFS) $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(SECURE_CFLAGS)
 
 unpack: zlib lzo openssl $(OBJ_LIB) $(OBJ_UNPACK)
-	@$(CC) -o $(UNPACK) $(OBJ_LIB) $(OBJ_UNPACK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -o $(UNPACK) $(OBJ_LIB) $(OBJ_UNPACK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB)
 
 test: lzo zlib openssl $(OBJ_LIB) $(OBJ_TEST)
-	@$(CC) -o $(TEST) $(OBJ_LIB) $(OBJ_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -o $(TEST) $(OBJ_LIB) $(OBJ_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB)
 
 btrtst: lzo zlib openssl $(OBJ_LIB) $(OBJ_BTREE_TEST)
-	@$(CC) -o $(BTREE_TEST) $(OBJ_LIB) $(OBJ_BTREE_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -o $(BTREE_TEST) $(OBJ_LIB) $(OBJ_BTREE_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB)
 
 tune: lzo zlib openssl $(OBJ_LIB) $(OBJ_TUNE)
-	@$(CC) -std=gnu99 -o $(TUNE) $(OBJ_LIB) $(OBJ_TUNE) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -std=gnu99 -o $(TUNE) $(OBJ_LIB) $(OBJ_TUNE) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB)
 
 fsck: zlib lzo openssl $(OBJ_LIB) $(OBJ_FSCK)
-	@$(CC) -std=gnu99 -o $(FSCK) $(OBJ_LIB) $(OBJ_FSCK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) -lm $(OPENSSL_LIB) $(CFLAGS)
-	@echo "  CCLD      " $@;
+	$(CC) -std=gnu99 -o $(FSCK) $(OBJ_LIB) $(OBJ_FSCK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) -lm $(OPENSSL_LIB)
 
 page-types: $(OBJ_PAGE_TYPES)
-	@$(CC) -std=gnu99 -o $(PAGE_TYPES) $(OBJ_PAGE_TYPES) $(CFLAGS)
-	@echo "  CCLD      " $@;
-
+	$(CC) -std=gnu99 -o $(PAGE_TYPES) $(OBJ_PAGE_TYPES)
+	
 info: openssl $(OBJ_INFO)
-	@$(CC) -std=gnu99 -o $(INFO) $(OBJ_INFO) $(CFLAGS)
-	@echo "  CCLD      " $@;
-%.o : %.c
-	@$(CC) $(CFLAGS) -c $< -o $@
-	@echo "  CC        " $@;
+	$(CC) -std=gnu99 -o $(INFO) $(OBJ_INFO)
+
 -include $(DEPS)
 
 #%.P: %.c
@@ -188,6 +167,9 @@ clean:
 	-rm -rf ./src/*.o
 	-rm -f $(UNITTEST)/*.o
 	-rm -f $(DEPS)
+	-rm -rf $(ZLIB_DIR)
+	-rm -rf $(LZOLIB_DIR)
+	-rm -rf $(OPENSSL_DIR)
 	$(shell rm -f `find -name \*.o` > /dev/null 2> /dev/null)
 	$(shell rm -f `find -name \*.d` > /dev/null 2> /dev/null)
 	$(shell rm -f `find -name test` > /dev/null 2> /dev/null)
@@ -195,14 +177,6 @@ clean:
 	$(shell rm -f `find -name \*.gcda` > /dev/null 2> /dev/null)
 	$(shell rm -f `find -name \*.gcov` > /dev/null 2> /dev/null)
 	$(shell rm -f `find -name test_report` > /dev/null 2> /dev/null)
-
-distclean: clean
-	-rm -rf $(ZLIB_DIR)
-	-rm -rf $(LZOLIB_DIR)
-	-rm -rf $(OPENSSL_DIR)
-
-opensource: clean
-	-rm -rf ./fsck ./info ./vdcrc ./tune ./unpack
 
 unit_tests:
 	$(eval export CFLAGS = -fprofile-arcs -ftest-coverage $(CFLAGS))

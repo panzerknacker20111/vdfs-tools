@@ -48,11 +48,11 @@ char *compressor_names[VDFS4_COMPR_NR] = {
 /* value of 0 means 1 byte alignment */
 size_t compr_align[VDFS4_COMPR_NR][ALIGN_NR] = {
 		[VDFS4_COMPR_UNDEF]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
-		[VDFS4_COMPR_ZLIB]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_ZLIB]	= {[ALIGN_START] = 8,	[ALIGN_LENGTH] = 64},
 		[VDFS4_COMPR_LZO]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 		[VDFS4_COMPR_XZ]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 		[VDFS4_COMPR_LZMA]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
-		[VDFS4_COMPR_GZIP]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_GZIP]	= {[ALIGN_START] = 8,	[ALIGN_LENGTH] = 64},
 		[VDFS4_COMPR_NONE]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
 };
 
@@ -769,6 +769,7 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		const struct profiled_file* pfile)
 {
 	int ret = 0;
+	char err_msg[ERR_BUF_LEN];
 	size_t packed_offset = 0, unpacked_offset = 0;
 	ssize_t  avail_in = 0;
 	int count = 0, ret_thread = 0;
@@ -1062,7 +1063,7 @@ compress_retry:
 				sbi->disk_op_image.file_id,
 				dst_offset, *new_file_size);
 		if (begin) {
-			*block = ALIGN(begin, sbi->block_size) / sbi->block_size;
+			*block = ALIGN(begin, sbi->block_size) / sbi->block_size;;
 			ftruncate(sbi->disk_op_image.file_id, dst_offset);
 			goto exit;
 		}
@@ -1072,7 +1073,8 @@ compress_retry:
 			sbi->block_size) / sbi->block_size);
 	ret = allocate_space(sbi,  begin, count_blocks, block);
 	if (ret) {
-		log_error("Can't allocate space(ret:%d)", ret);
+		log_error("Can't allocate space - %s",
+					strerror_r(-ret, err_msg, ERR_BUF_LEN));
 		goto err_write_exit;
 	}
 
@@ -1174,6 +1176,7 @@ int analyse_existing_file(int rd_fd,
 int check_file_before_compress(const char *filename, int need_compress,
 		mode_t *src_mode, int min_comp_size)
 {
+	char err_msg[ERR_BUF_LEN];
 	int ret = 0;
 	struct stat stat_info;
 	int min_size = min_comp_size == -1 ?
@@ -1182,8 +1185,8 @@ int check_file_before_compress(const char *filename, int need_compress,
 	ret = lstat(filename, &stat_info);
 	if (ret < 0) {
 		int err = errno;
-		log_error("Can't get stat info of %s because of err(%d)",
-			  filename, errno);
+		log_error("Can't get stat info of %s because of %s",
+				filename, strerror_r(errno, err_msg, ERR_BUF_LEN));
 		return err;
 	}
 	*src_mode = stat_info.st_mode;
@@ -1198,8 +1201,7 @@ int check_file_before_compress(const char *filename, int need_compress,
 	return ret;
 }
 
-struct profiled_file* find_prof_data_path(struct list_head *prof_data,
-					  char* path)
+struct profiled_file* find_prof_data_path(struct list_head *prof_data, char* path)
 {
 	struct profiled_file* pfile;
 	list_for_each_entry(pfile, prof_data, list) {
@@ -1226,6 +1228,7 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 	char *uncompr_name = NULL;
 
 	off_t src_file_size;
+	char err_msg[ERR_BUF_LEN];
 	int ret;
 	RSA *__rsa_key = rsa_key;
 	int is_authenticated = 0;
@@ -1248,8 +1251,9 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 	src_fd = open(src_filename, O_RDONLY);
 	if (src_fd == -1) {
 		ret = errno;
-		log_error("error(%d) while opening file %s for read",
-			  errno, src_filename);
+		log_error("error %s while opening file %s for read",
+				strerror_r(errno, err_msg, ERR_BUF_LEN),
+				src_filename);
 		goto rel_src_fd;
 	}
 	ret = get_file_size(src_fd, &src_file_size);
@@ -1306,7 +1310,9 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 
 	if (tmp_dst_fd == -1) {
 		ret = errno;
-		log_error("err(%d) temporary file %s", errno, compr_name);
+		log_error("%s temporary file %s",
+				strerror_r(errno, err_msg, ERR_BUF_LEN),
+				compr_name);
 		goto rel_src_fd;
 	}
 	unlink(compr_name);
@@ -1315,8 +1321,9 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 				      S_IRUSR | S_IWUSR);
 		if (tmp_uncompr_fd == -1) {
 			ret = errno;
-			log_error("err(%d) temporary file %s",
-				  errno, uncompr_name);
+			log_error("%s temporary file %s",
+					strerror_r(errno, err_msg, ERR_BUF_LEN),
+					uncompr_name);
 			close(tmp_dst_fd);
 			goto rel_src_fd;
 		}
@@ -1325,8 +1332,7 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 
 	memset(&aes_info, 0, sizeof(struct vdfs4_aes_info));
 	if(do_encrypt) {
-		memcpy(&aes_info.aes_key, sbi->aes_key,
-		       sizeof(aes_info.aes_key));
+		memcpy(&aes_info.aes_key, sbi->aes_key, sizeof(aes_info.aes_key));
 		if(!RAND_status())
 			log_error("Warning: PRNG is not seeded correctly!");
 		RAND_bytes(aes_info.aes_nonce, VDFS4_AES_NONCE_SIZE);
@@ -1758,15 +1764,14 @@ void compress_file_thread(void *arg)
 			f_rec = (struct vdfs4_catalog_file_record *)
 					(record->val);
 			if (IS_FLAG_SET(f_rec->common.flags,
-					VDFS4_HLINK_TUNE_TRIED)) {
-				log_info("File %s has been tried"
-					 " to comp & copy already",
-					 tinfo->ptr->src_full_path);
+					VDFS4_COMPRESSED_FILE)) {
+				log_info("File %s has been copied already",
+						tinfo->ptr->src_full_path);
 				pthread_mutex_unlock(&find_record_mutex);
 				goto exit;
 			} else if (tinfo->ptr->cmd & CMD_COMPRESS) {
 				f_rec->common.flags |=
-					(1 << VDFS4_HLINK_TUNE_TRIED);
+					(1 << VDFS4_COMPRESSED_FILE);
 			}
 			pthread_mutex_unlock(&find_record_mutex);
 		} else {
@@ -1855,12 +1860,6 @@ do_compress:
 		if (ret) {
 			if (ret == -ENOTCOMPR) {
 				ret = 0;
-			} else if (ret == -ENOSPC) {
-				log_error("Compression error - %d,"
-						" file - %s", ret,
-						tinfo->ptr->src_full_path);
-				log_error("Mkfs can't allocate enough disk space");
-				exit(-ENOSPC);
 			} else {
 				log_error("Compression error - %d,"
 						" file - %s", ret,
@@ -2156,6 +2155,7 @@ static int disable_file_compression(char* path, struct vdfs4_sb_info* sbi)
 static int disable_dir_compression(char* dir_path, struct vdfs4_sb_info* sbi)
 {
 	DIR *dir;
+	char err_msg[ERR_BUF_LEN];
 	int ret;
 	struct dirent *data;
 	struct dirent entry;
@@ -2167,8 +2167,8 @@ static int disable_dir_compression(char* dir_path, struct vdfs4_sb_info* sbi)
 		return -ENOMEM;
 	dir = opendir(dir_path);
 	if (!dir) {
-		log_error("disable_dir_compression Can't open dir %s(err:%d)",
-			  dir_path, errno);
+		log_error("disable_dir_compression Can't open dir %s - %s",
+				dir_path, strerror_r(errno, err_msg, ERR_BUF_LEN));
 		ret = -errno;
 		goto err_dir;
 	}

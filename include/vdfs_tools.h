@@ -45,6 +45,7 @@
 /* constant used to separate seconds from full time in nanoseconds */
 #define NANOSEC_DIVIDER 1000000000
 #define VDFS4_FULL_PATH_LEN	1023
+#define ERR_BUF_LEN 		1024
 #define XATTR_VAL_SIZE		1023
 /**
  * @brief       Set bit flag in variable.
@@ -105,7 +106,6 @@ enum tools_flags {
 	/*24*/ SHA_1,
 	/*25*/ ENCRYPT_EXEC,
 	/*26*/ ENCRYPT_ALL,
-	/*27*/ LIMITED_SIZE,
 };
 
 /* space manager constants */
@@ -387,12 +387,10 @@ struct vdfs4_sb_info {
 	FILE *squash_list_file;
 	/** Filesystem timestamp */
 	struct vdfs4_timespec timestamp;
-	/** Filesystem Volume size in bytes (min) */
-	u_int64_t min_volume_size;
-	/** Filesystem Volume size in bytes (max) */
-	u_int64_t max_volume_size;
-	/** Generated Image file size */
-	u_int64_t image_file_size;
+	/* minimal image size in bytes */
+	u_int64_t min_image_size;
+	/* normal image size */
+	u_int64_t image_size;
 	/** Size of metadata of new filesystem in bytes */
 	unsigned long long metadata_size;
 	/** Device or image file name */
@@ -447,7 +445,6 @@ struct vdfs4_sb_info {
 	int min_compressed_size;
 	char *compr_type;
 	int min_space_saving_ratio;
-	int jobs;
 
 	/* Profiling data (vdfs-squeeze) */
 	char *profiling_data_path;
@@ -520,7 +517,7 @@ static inline __le64 get_volume_body_length(struct vdfs4_sb_info *sbi)
 {
 	__le64 volume_body_lenght = 0;
 
-	volume_body_lenght = byte_to_block_no_round(sbi->max_volume_size,
+	volume_body_lenght = byte_to_block_no_round(sbi->image_size,
 			sbi->block_size);
 	volume_body_lenght -= get_volume_body_start(sbi);
 	volume_body_lenght -= 1;
@@ -607,7 +604,7 @@ void set_permissions_for_root_dir(struct vdfs4_posix_permissions
 
 int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 		struct vdfs4_subsystem_data *subsystem);
-u64 metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock);
+int metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock);
 int iblock_to_metablock(struct vdfs4_sb_info *sbi, u64 iblock);
 /* Hard link tree functions */
 struct hlink_list_item *hl_list_item_find(struct hlink_list_item *head,
@@ -628,7 +625,6 @@ void destroy_snapshot(struct vdfs4_sb_info *sbi);
 
 /** meta hashtable functions */
 int init_hashtable(struct vdfs4_sb_info *sbi);
-int flush_hashtable(struct vdfs4_sb_info *sbi);
 void destroy_hashtable(struct vdfs4_sb_info *sbi);
 
 /* Hard link area functions */
@@ -680,7 +676,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info, const char *src_filename,
 void copy_file_from_image(/*struct vdfs4_sb_info *sb_info,
 			const char *src_filename,
 			const char *dst_filename*/);
-int get_image_size(struct vdfs4_sb_info *sbi, u_int64_t *size);
+off_t get_image_size(struct vdfs4_sb_info *sbi);
 int create_hard_link(/*struct vdfs4_sb_info *sb_info,
 			const char *dst_filename,
 			const char *src_filename*/);
@@ -806,7 +802,6 @@ int util_validate_crc(char *buff, int buff_size, int skip);
 int util_update_crc(char *buff, int buff_size, const char *magic,
 		int magic_len);
 unsigned int slog(int block);
-unsigned int get_elapsed_time(void);
 
 /** small.c*/
 int init_small(struct vdfs4_sb_info *sbi);

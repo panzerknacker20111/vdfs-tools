@@ -43,11 +43,13 @@ void get_permissions_for_root_dir(struct vdfs4_posix_permissions *permissions)
 int get_permissions_for_root_dir_from_path(struct vdfs4_sb_info *sbi,
 		struct vdfs4_posix_permissions *permissions)
 {
+	char err_msg[ERR_BUF_LEN];
 	struct stat stat_info;
 	int ret = lstat(sbi->root_path, &stat_info);
 	if (ret) {
-		log_error("Can't get stat information of root dir %s(err:%d)",
-					sbi->root_path, errno);
+		log_error("Can't get stat information of root dir %s - %s",
+					sbi->root_path,
+					strerror_r(errno, err_msg, ERR_BUF_LEN));
 		return ret;
 	}
 	permissions->file_mode = cpu_to_le16(stat_info.st_mode);

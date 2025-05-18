@@ -120,6 +120,7 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 		off_t *data_area_size, struct vdfs4_comp_extent **ext,
 		int *compress_type, off_t file_size_offset, int *log_chunk_size)
 {
+	char err_msg[ERR_BUF_LEN];
 	int ret = 0;
 	loff_t first_ext_pos;
 	int ext_n = 0;
@@ -128,7 +129,8 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 	if (pread(fd, descr, sizeof(struct vdfs4_comp_file_descr),
 			file_size_offset - sizeof(*descr)) == -1) {
 		ret = -errno;
-		log_error("cannot read from file(err:%d)", errno);
+		log_error("cannot read from file",
+				strerror_r(errno, err_msg, ERR_BUF_LEN));
 		return ret;
 	}
 	*log_chunk_size = le32_to_cpu(descr->log_chunk_size);
@@ -157,8 +159,8 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 	if ((unsigned) ext_n > file_size_offset / sizeof(struct vdfs4_comp_extent)
 			|| ext_n < 0)
 		return -EINVAL;
-	first_ext_pos = (loff_t)descr_size +
-			(((loff_t)ext_n) * ((loff_t)sizeof(struct vdfs4_comp_extent)));
+	first_ext_pos = (loff_t)descr_size + 
+			(((loff_t)ext_n) *	((loff_t)sizeof(struct vdfs4_comp_extent)));
 	if (descr->magic[0] == VDFS4_MD5_AUTH ) {
 		hash_len = VDFS4_MD5_HASH_LEN;
 		first_ext_pos += hash_len * (ext_n + 1) + sign_len;
@@ -178,7 +180,8 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 		table_size = ext_n * sizeof(struct vdfs4_comp_extent);
 		if (pread(fd, *ext, table_size, first_ext_pos) == -1) {
 			ret = errno;
-			log_error("cannot read from file(err:%d)", errno);
+			log_error("cannot read from file",
+					strerror_r(errno, err_msg, ERR_BUF_LEN));
 			return ret;
 		}
 	}
@@ -334,6 +337,7 @@ free_buf:
 int decode_file(const char *src_name, int dst_fd, int need_decompress,
 		int *flags, AES_KEY *encryption_key)
 {
+	char err_msg[ERR_BUF_LEN];
 	int ret = 0;
 	struct vdfs4_comp_extent *exts = NULL;
 	int compress_type, chunks_num;
@@ -366,7 +370,8 @@ int decode_file(const char *src_name, int dst_fd, int need_decompress,
 				compress_type, exts, log_chunk_size,
 				&descriptor, encryption_key);
 		if (ret)
-			log_error("Fail while decompression - (ret:%d)", ret);
+			log_error("Fail while decompression - %d %s", ret,
+					strerror_r(-ret, err_msg, ERR_BUF_LEN));
 	}
 
 free_exts:

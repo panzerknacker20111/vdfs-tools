@@ -736,6 +736,7 @@ struct vdfs4_cattree_record *find_record(struct vdfs4_sb_info *sbi,
 {
 	int i, len = strlen(path);
 	char *name = "root";
+	char err_msg[ERR_BUF_LEN];
 	__u64 parent_id = 0;
 
 	for (i = 0; i < len; i++) {
@@ -744,8 +745,8 @@ struct vdfs4_cattree_record *find_record(struct vdfs4_sb_info *sbi,
 			parent_id = __find_parent_id(sbi, parent_id, name);
 			path[i] = '/';
 			if (IS_ERR_VALUE(parent_id)) {
-				log_error("find parent %s - ret:%d",
-					  path, parent_id);
+				log_error("%s - %s", path,
+						strerror_r(-parent_id, err_msg, ERR_BUF_LEN));
 				return ERR_PTR(parent_id);
 			}
 			name = &path[i + 1];

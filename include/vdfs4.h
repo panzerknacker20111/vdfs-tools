@@ -184,8 +184,7 @@ extern unsigned int cattree_prealloc;
 
 /* below flags are only used at mkfs runtime
  * and aren't written on partition layout */
-#define VDFS4_HLINK_TUNE_TRIED	30
-#define VDFS4_NOCOMPRESS_FILE	31
+#define VDFS4_NOCOMPRESS_FILE 31
 
 /* Macros for calculating catalog tree expand step size.
  * x - total blocks count on volume

@@ -67,8 +67,6 @@ int flush_subsystem(struct vdfs4_sb_info *sbi,
 	__le64 last_iblock;
 	__u32 blocks_count;
 	struct vdfs4_base_table *base_table;
-
-	log_activity("Flush : %s", subsystem->subsystem_name);
 	if (subsystem->sub_system_id == 0) {
 		start_block = sbi->snapshot.tables_extent.first_block;
 		blocks_count = sbi->snapshot.tables_extent.block_count;
@@ -95,11 +93,9 @@ write:
 	ret = vdfs4_write_blocks(sbi, (u_int64_t)start_block,
 			subsystem->buffer, blocks_count);
 	if (ret)
-		log_error("Can't copy %s to disk(ret:%d)",
-			  subsystem->subsystem_name, ret);
+		log_error("Can't copy % to disk", subsystem->subsystem_name);
 	else
-		log_activity("Successed to flush %s",
-			     subsystem->subsystem_name);
+		log_activity("Copy %s", subsystem->subsystem_name);
 	return ret;
 }
 /**
@@ -121,17 +117,16 @@ int flush_subsystem_tree(struct vdfs4_sb_info *sbi,
 			base_table, tree->tree.sub_system_id));
 	struct vdfs4_meta_hashtable *hashtable = (struct vdfs4_meta_hashtable *)
 		sbi->meta_hashtable.subsystem.buffer;
-	__le32 *hashtable_crc = (__le32 *)
-		((char*)hashtable + sizeof(struct vdfs4_meta_hashtable));
+	__le32 *hashtable_crc =
+		(__le32 *)((char*)hashtable + sizeof(struct vdfs4_meta_hashtable));
 	u64 start = 0;
 
-	log_activity("Flush tree : %s", tree->tree.subsystem_name);
+	log_activity("BNode CRC");
 	for (i = 0; i < bnodes_count; i++) {
 		start = VDFS4_GET_IBLOCK(table[i].meta_iblock,
 				sbi->snapshot.metadata_extent[0].first_block)
 				+ sbi->vdfs4_start_block;
-		memcpy(((char *)tree->bnode_array[i]->data) + 4,
-		       &version, VERSION_SIZE);
+		memcpy(((char *)tree->bnode_array[i]->data) + 4, &version, VERSION_SIZE);
 		crc = util_update_crc(tree->bnode_array[i]->data,
 				get_bnode_size(sbi), NULL, 0);
 		/* fill hash table crc */
@@ -141,18 +136,17 @@ int flush_subsystem_tree(struct vdfs4_sb_info *sbi,
 					byte_to_block(get_bnode_size(sbi),
 							sbi->block_size));
 		if (ret) {
-			log_error("Can't copy %s to disk(ret:%d)",
-				  tree->tree.subsystem_name, ret);
+			log_error("Can't copy %s to disk",
+					tree->tree.subsystem_name);
 			break;
 		}
 	}
 	if (!ret)
-		log_activity("Successed to flush %s",
-			     tree->tree.subsystem_name);
+		log_activity("Copy %s", tree->tree.subsystem_name);
 	return ret;
 }
 /******************************************************************************/
-static int fill_superblock(struct vdfs4_sb_info *sbi)
+int fill_superblock(struct vdfs4_sb_info *sbi)
 {
 	int real_sb_size;
 	int ret = 0;
@@ -167,16 +161,14 @@ static int fill_superblock(struct vdfs4_sb_info *sbi)
 	sbi->sb.log_super_page_size = log2_32(sbi->super_page_size);
 	sbi->sb.log_erase_block_size = log2_32(sbi->erase_block_size);
 
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE))
-		sbi->sb.read_only = 1;
-
 	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
-		sbi->sb.maximum_blocks_count =
-			cpu_to_le64(sbi->image_file_size / sbi->block_size);
-	} else {
-		sbi->sb.maximum_blocks_count =
-			cpu_to_le64(sbi->max_volume_size / sbi->block_size);
+		sbi->image_size = get_image_size(sbi);
+		sbi->min_image_size = sbi->image_size;
+		sbi->sb.read_only = 1;
 	}
+
+	sbi->sb.maximum_blocks_count =
+		cpu_to_le64(sbi->image_size / sbi->block_size);
 
 	memcpy(&sbi->sb.creation_timestamp, &sbi->timestamp,
 				sizeof(sbi->sb.creation_timestamp));
@@ -255,7 +247,7 @@ void fill_layout_fork(struct vdfs4_fork *fork, struct vdfs4_fork_info *fork_info
 				fork_info->extents[count].iblock);
 }
 
-static void fill_ext_superblock(struct vdfs4_sb_info *sbi)
+void fill_ext_superblock(struct vdfs4_sb_info *sbi)
 {
 	struct snapshot_info *snapshot = &sbi->snapshot;
 	__u32 i;
@@ -290,14 +282,8 @@ static void fill_ext_superblock(struct vdfs4_sb_info *sbi)
 		cpu_to_le32(snapshot->tables_extent.block_count);*/
 	sbi->esb.volume_body.length = cpu_to_le32(get_volume_body_length(sbi));
 
-	/* set volume size */
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
-		sbi->esb.volume_blocks_count =
-			cpu_to_le64(sbi->image_file_size / sbi->block_size);
-	} else {
-		sbi->esb.volume_blocks_count =
-			cpu_to_le64(sbi->min_volume_size / sbi->block_size);
-	}
+	sbi->esb.volume_blocks_count =
+		cpu_to_le64(sbi->min_image_size / sbi->block_size);
 
 	sbi->esb.files_count = cpu_to_le64(sbi->files_count);
 	sbi->esb.folders_count = cpu_to_le64(sbi->folders_count);
@@ -307,30 +293,13 @@ static void fill_ext_superblock(struct vdfs4_sb_info *sbi)
 	sbi->esb.debug_area.begin = cpu_to_le64(sbi->debug_area.first_block);
 	sbi->esb.debug_area.length = cpu_to_le32(sbi->debug_area.block_count);
 
-	/* initial sync counter */
 	sbi->esb.sync_counter = cpu_to_le32(1);
-
-	/* fill HASHTABLE extent */
-	sbi->esb.meta_hashtable_area.begin =
-		sbi->meta_hashtable.subsystem.fork.extents[0].first_block;
-	sbi->esb.meta_hashtable_area.length =
-		sbi->meta_hashtable.subsystem.fork.extents[0].block_count;
-
-	/* calculate extended superblock checksum */
 	sbi->esb.checksum = cpu_to_le32(vdfs4_crc32(&sbi->esb, sizeof(sbi->esb) -
 			sizeof(sbi->esb.checksum)));
 }
 
 int prepare_superblocks(struct vdfs4_sb_info *sbi)
 {
-	int ret;
-
-	ret = get_image_size(sbi, &sbi->image_file_size);
-	if (ret) {
-		log_error("get image file size failed");
-		return ret;
-	}
-
 	fill_ext_superblock(sbi);
 	return fill_superblock(sbi);
 }
@@ -437,7 +406,7 @@ int discard_volume(struct vdfs4_sb_info *sbi)
 	if (S_ISBLK(stat_buf.st_mode)) {
 		/* send discard cmd */
 		range[0] = 0;
-		range[1] = sbi->max_volume_size;
+		range[1] = sbi->image_size;
 		ret = ioctl(sbi->disk_op_image.file_id,
 			    BLKDISCARD, &range);
 		if (ret < 0 && errno == EOPNOTSUPP) {
@@ -487,7 +456,12 @@ int flush_superblocks(struct vdfs4_sb_info *sbi, int argc, char *argv[])
 		return ret;
 	ret = vdfs4_write_blocks(sbi, 1 + sbi->vdfs4_start_block, write_buffer,
 		byte_to_block(write_size, sbi->block_size));
-
+	if (ret)
+		return ret;
+	if ((IS_FLAG_SET(sbi->service_flags, IMAGE)) &&
+			(!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) &&
+			(IS_FLAG_SET(sbi->service_flags, NO_STRIP_IMAGE)))
+		ret = ftruncate(sbi->disk_op_image.file_id, sbi->image_size);
 	return ret;
 }
 
@@ -526,8 +500,6 @@ int allocate_fixed_areas(struct vdfs4_sb_info *sbi)
 	/*allocate space for debug area*/
 	ret = allocate_space(sbi, sbi->debug_area.first_block,
 			sbi->debug_area.block_count, NULL);
-	if (ret)
-		log_error("Can not get free space for debug area");
 
 	return ret;
 }

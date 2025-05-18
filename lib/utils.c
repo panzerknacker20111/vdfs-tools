@@ -214,7 +214,7 @@ int util_sign_set_bits(char *buff, int buff_size, u_int64_t addr,
 			int_addr = addr  % (datablock_size);
 		else
 			int_addr = 0;
-		length = (datablock_size - int_addr);
+			length = (datablock_size - int_addr);
 		if (count < length)
 			length = count;
 		else
@@ -271,7 +271,7 @@ int util_sign_clear_bits(char *buff, int buff_size, u_int64_t addr,
 			int_addr = addr  % (datablock_size);
 		else
 			int_addr = 0;
-		length = (datablock_size - int_addr);
+			length = (datablock_size - int_addr);
 		if (count < length)
 			length = count;
 		else
@@ -308,15 +308,4 @@ unsigned int slog(int block)
 		if (block & (1 << i))
 			return i;
 	return 0;
-}
-
-unsigned int get_elapsed_time(void)
-{
-	static struct timespec start_time = {0, 0};
-	struct timespec cur_time;
-
-	if (start_time.tv_sec == 0)
-		clock_gettime(CLOCK_REALTIME, &start_time);
-	clock_gettime(CLOCK_REALTIME, &cur_time);
-	return (unsigned int)(cur_time.tv_sec - start_time.tv_sec);
 }

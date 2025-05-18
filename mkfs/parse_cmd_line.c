@@ -30,92 +30,7 @@
 #include <openssl/md5.h>
 #include <openssl/sha.h>
 
-#define ARRAY_SIZE(x) (sizeof((x))/sizeof((x)[0]))
-
-/*
- * Parameter Definitions
- */
-enum {
-	opt_erase_block_size	= 'e',
-	opt_image_creation	= 'i',
-	opt_verbose		= 'v',
-	opt_Verbose		= 'V',
-	opt_volume_size		= 'z',
-	opt_timestamp		= 't',
-	opt_root_dir		= 'r',
-	opt_config		= 'q',
-	opt_compressor		= 'c',
-	opt_sign		= 's',
-	opt_hash_type		= 'h',
-	opt_jobs		= 'j',
-	/* option list without short arg */
-	opt_chunk_size		= 1000,
-	opt_dry_run,
-	opt_dump,
-	opt_no_strip,
-	opt_case_insensitive,
-	opt_metadata_size,
-	opt_super_page_size,
-	opt_all_root,
-	opt_pub_rsa_key,
-	opt_tmp_dir,
-	opt_p_rsa_key,
-	opt_q_rsa_key,
-	opt_sign_all,
-	opt_min_comp_size,
-	opt_aes_key,
-	opt_encrypt_exec,
-	opt_encrypt_all,
-	opt_prof_data,
-	opt_min_space_saving_ratio,
-	opt_hash_priv_rsa_key,
-	opt_read_only,
-	opt_refer_image,
-	opt_help,
-	opt_version,
-};
-
-static const char *short_options = "e:ivVz:t:r:q:c:s:j:h:";
-static const struct option long_options[] = {
-	{"erase-block-size",	required_argument,	NULL, opt_erase_block_size},
-	{"chunk-size",		required_argument,	NULL, opt_chunk_size},
-	{"image-creation",	no_argument,		NULL, opt_image_creation},
-	{"dry-run",		no_argument,		NULL, opt_dry_run},
-	{"verbose",		no_argument,		NULL, opt_verbose},
-	{"Verbose",		no_argument,		NULL, opt_Verbose},
-	{"dump",		required_argument,	NULL, opt_dump},
-	{"volume-size",		required_argument,	NULL, opt_volume_size},
-	{"image-size",		required_argument,	NULL, opt_volume_size}, /* just for backward compatibility about option name */
-	{"timestamp",		required_argument,	NULL, opt_timestamp},
-	{"root-dir",		required_argument,	NULL, opt_root_dir},
-	{"no-strip",		no_argument,		NULL, opt_no_strip},
-	{"case-insensitive",	no_argument,		NULL, opt_case_insensitive},
-	{"metadata-size",	required_argument,	NULL, opt_metadata_size},
-	{"super_page_size",	required_argument,	NULL, opt_super_page_size},
-	{"config",		required_argument,	NULL, opt_config},
-	{"all-root",		no_argument,		NULL, opt_all_root},
-	{"hash-priv-rsa-key",	required_argument,	NULL, opt_hash_priv_rsa_key},
-	{"pub-rsa-key",		required_argument,	NULL, opt_pub_rsa_key},
-	{"tmp-dir",		required_argument,	NULL, opt_tmp_dir},
-	{"p-rsa-key",		required_argument,	NULL, opt_p_rsa_key},
-	{"q-rsa-key",		required_argument,	NULL, opt_q_rsa_key},
-	{"sign-all",		required_argument,	NULL, opt_sign_all},
-	{"min-comp-size",	required_argument,	NULL, opt_min_comp_size},
-	{"aes-key",		required_argument,	NULL, opt_aes_key},
-	{"encrypt-exec",	no_argument,		NULL, opt_encrypt_exec},
-	{"encrypt-all",		no_argument,		NULL, opt_encrypt_all},
-	{"prof-data",		required_argument,	NULL, opt_prof_data},
-	{"compressor",		required_argument,	NULL, opt_compressor},
-	{"min-space-saving-ratio",	required_argument,	NULL, opt_min_space_saving_ratio},
-	{"sign",		required_argument,	NULL, opt_sign},
-	{"hash-type",		required_argument,	NULL, opt_hash_type},
-	{"jobs",		required_argument,	NULL, opt_jobs},
-	{"read-only",		no_argument,		NULL, opt_read_only},
-	{"refer-image",		required_argument,	NULL, opt_refer_image},
-	{"help",		no_argument,		NULL, opt_help},
-	{"version",		no_argument,		NULL, opt_version},
-	{NULL, 0, NULL, 0}
-};
+#define ARRAY_SIZE(x) (sizeof((x))/sizeof((x)[0])) 
 
 /**
  * @brief	Print mkfs.vdfs4 usage options. Shown in case of wrong parameters.
@@ -126,16 +41,18 @@ void usage(bool expert)
 	unsigned int i,j;
 	const char *basic_opt[] = {
 		"usage: mkfs.vdfs filename",
-		"[-i,-image-creation] [-r,--root-dir directory] [-z,--volume-size size[K|M|G]]",
+		"[-i,-image-creation] [-r,--root-dir directory] [-z,--image-size size[K|M|G]]",
 		"[-c,--compressor gzip|zlib|lzo] [-s,--sign 1024|2048|file] [-h,--hash-type sha256|sha1|md5]",
-		"[-v,--verbose] [-j,--jobs jobcount] [-V,--Verbose] [--dry-run] [--help] [--version]"};
+		"[-v,--verbose] [-V,--Verbose] [--dry-run] [--help] [--version]"};
 	const char *basic_desc[][10] = {
 		{"-i,-image-creation",
 			"enable image creation mode. mkfs create image of filesystem in file."},
 		{"-r,--root-dir directory",
 			"Image root directory"},
-		{"-z,--volume-size size or --volume-size=min_size:max_size",
-			"Specify volume size of filesystem image in bytes. Usable only in image creation mode.",
+		{"-z,--image-size size or --image-size=min_size:max_size",
+			"Specify size of filesystem image in bytes. Usable only in image creation mode.",
+			"By default if this option is not specified,",
+			"mkfs creates compact read-only image with data placed to the start of volume.",
 			"NOTE: You may use multipliers K, M, G for size parameter.",
 			"If size is min:max range,",
 			"filesystem will be ready to work on disk within this range and automatically expand at first mount"},
@@ -148,11 +65,6 @@ void usage(bool expert)
 			"NOTE: You can specify hash type using '-h,--hash-type' option."},
 		{"-h,--hash-type sha256|sha1|md5",
 			"select algorithm for hash calculation. Usable only in sign mode (default:sha256)"},
-		{"--read-only",
-			"mkfs creates compact read-only image with data placed to the start of volume."},
-		{"-j,--jobs jobcount",
-			"Specify the number of jobs to run parrallel jobs for making vdfs image.",
-			"If not use this option, mkfs automatically select optimized job count."},
 		{"-v,--verbose",
 			"Verbose mode of execution."},
 		{"-V,--Verbose",
@@ -170,7 +82,7 @@ void usage(bool expert)
 		"[--super_page_size size[K|M|G]] [--metadata-size size] [--all-root] [--no-strip]",
 		"[--hash-priv-rsa-key file] [--pub-rsa-key file] [--p-rsa-key] [--q-rsa-key] [--sign-all]",
 		"[--aes-key] [--encrypt-exec] [--encrypt-all] [--prof-data] [--dump] [-q,--config file]",
-		"[--sha256] [--sha1] [--no-all-root] [--refer-image file]"};
+		"[--sha256] [--sha1] [--no-all-root]"};
 	const char *expert_desc[][10] = {
 		{"-t,--timestamp nanoseccond",
 			"Current time for filesystem objects in nanoseconds since POSIX epoch"},
@@ -198,7 +110,7 @@ void usage(bool expert)
 		{"--all-root",
 			"Set uid and gid of all files to zero(root)"},
 		{"--no-strip",
-			"Don't strip image. Usable only in writable image creation mode.",
+			"Don't strip image. Usable only in image creation mode.",
 			"By default mkfs creates compact image with data placed to the start of volume"},
 		{"--hash-priv-rsa-key file",
 			"Private rsa key for superblock and tuned files signing"},
@@ -227,10 +139,6 @@ void usage(bool expert)
 			"	#Force disable file compression:",
 			"	#INFO: NOCOMPRESS doesn't affect ELF files",
 			"	NOCOMPRESS /dir1/file1"},
-		{"--refer-image IMAGE_FILE",
-			"Create image like given image file.",
-			"This option uses the parameters in given image file except '-i' and '-r' option.",
-			"So, when you use this option, you should input both of '-i' and '-r' option."},
 		};
 	/* print option list */
 	for (i = 0; i < ARRAY_SIZE(basic_opt); i++) {
@@ -316,149 +224,20 @@ static int read_image_size(struct vdfs4_sb_info *sbi, char *value)
 
 	if (sep) {
 		*sep = 0;
-		sbi->min_volume_size = read_value_with_multiplier(value);
-		sbi->max_volume_size = read_value_with_multiplier(sep + 1);
+		sbi->min_image_size = read_value_with_multiplier(value);
+		sbi->image_size = read_value_with_multiplier(sep + 1);
 		*sep = ':';
 	} else {
-		sbi->max_volume_size = read_value_with_multiplier(value);
-		sbi->min_volume_size = sbi->max_volume_size;
+		sbi->image_size = read_value_with_multiplier(value);
+		sbi->min_image_size = sbi->image_size;
 	}
 
-	if (!sbi->min_volume_size) {
-		log_error("Minimal image size is wrong : %d",
-			  sbi->min_volume_size);
-		return -EWRONGOPTS;
-	}
-
-	if (sbi->min_volume_size > sbi->max_volume_size) {
+	if (sbi->min_image_size > sbi->image_size) {
 		log_error("Minimal image size is more than maximum");
 		return -EWRONGOPTS;
 	}
 
 	return 0;
-}
-
-static int extract_options(char *filename,
-			   char *args, char *argv[], int *argc)
-{
-	int ret = 0, fd;
-	unsigned int cnt = 0, i;
-	ssize_t size;
-	struct vdfs4_volume_begins volume_begin;
-	bool arg_start_flag = true;
-
-	fd = open(filename, O_RDONLY);
-	if (fd < 0) {
-		log_error("file(%s) open failed(err:%d)", filename, errno);
-		return -EINVAL;
-	}
-
-	size = read(fd, &volume_begin, sizeof(struct vdfs4_volume_begins));
-	if (size != sizeof(struct vdfs4_volume_begins)) {
-		log_error("file(%s) read problem(err:%d,size:%d)",
-			  filename, errno, size);
-		ret = -EFAULT;
-		goto out;
-	}
-
-	/* check superblock signature */
-	if (strncmp((char*)volume_begin.signature, VDFS4_SB_SIGNATURE, 4)) {
-		log_error("file(%s) is not vdfs image", filename);
-		ret = -EINVAL;
-		goto out;
-	}
-
-	/* copy parameters from image file */
-	memcpy(args, volume_begin.command_line, IMAGE_CMD_LENGTH);
-	for (i = 0; ; i++, args++) {
-		if (*(args) == '\0' && *(args+1) == '\0')
-			break;
-		if (*(args) == '\0') {
-			arg_start_flag = true;
-		} else if (arg_start_flag == true) {
-			arg_start_flag = false;
-			argv[cnt++] = args;
-		}
-
-		if (cnt >= ARRAY_SIZE(long_options)) {
-			log_error("option count over(%d)", cnt);
-			ret = -EOVERFLOW;
-			goto out;
-		}
-	}
-	*argc = cnt;
-
-out:
-	close(fd);
-	return ret;
-}
-
-static int mkfs_refer_image(char *exe, char *file_name, char *root_path,
-			    char *refer_img)
-{
-	int ret, opt, i;
-	char refer_args[IMAGE_CMD_LENGTH] = {0,};
-	char *refer_argv[ARRAY_SIZE(long_options)] = {0,};
-	int refer_argc, argc = 0;
-	char *argv[ARRAY_SIZE(long_options)] = {0,};
-	char cmd[IMAGE_CMD_LENGTH] = {0,};
-
-	/* set args from current command line */
-	argv[argc++] = exe;
-	argv[argc++] = "-i";
-	argv[argc++] = file_name;
-	argv[argc++] = "-r";
-	argv[argc++] = root_path;
-
-	/* extract args from image file */
-	ret = extract_options(refer_img, refer_args, refer_argv, &refer_argc);
-	if (ret) {
-		log_error("extract parameters failed(%d)", ret);
-		goto out;
-	}
-
-	/* reset getopt_long() global variables */
-	optind = 1;
-
-	/* merge arguments */
-	while ((opt = getopt_long(refer_argc, refer_argv,
-		short_options, long_options, NULL)) != EOF) {
-		switch(opt) {
-		case opt_image_creation:
-		case opt_root_dir:
-		case opt_refer_image:
-			/* ignore options */
-			break;
-		default:
-			/* check argv overflow */
-			if ((argc + 2) >= (int)ARRAY_SIZE(long_options)) {
-				log_error("merged opt count is over(%d)", argc);
-				ret = -EOVERFLOW;
-				goto out;
-			}
-			/* copy arguments */
-			if (optarg) {
-				argv[argc++] = refer_argv[optind-2];
-				argv[argc++] = optarg;
-			} else {
-				argv[argc++] = refer_argv[optind-1];
-			}
-			break;
-		}
-	}
-
-	/* output command and execute it */
-	snprintf(cmd, sizeof(cmd), "Merged CMD :");
-	for (i = 0; i < argc; i++) {
-		strncat(cmd, " ", sizeof(cmd) - strlen(cmd) - 1);
-		strncat(cmd, argv[i], sizeof(cmd) - strlen(cmd) - 1);
-	}
-	log_note(cmd);
-	ret = execv(exe, argv);
-	log_error("execv is failed(%s, err:%d)", exe, errno);
-
-out:
-	return ret;
 }
 
 /**
@@ -469,13 +248,85 @@ out:
 			parameters of vdfs4 superblock.
  * @return  0 if parced successfully, or error
  */
+enum {
+	opt_erase_block_size	= 'e',
+	opt_image_creation	= 'i',
+	opt_verbose		= 'v',
+	opt_Verbose		= 'V',
+	opt_image_size		= 'z',
+	opt_timestamp		= 't',
+	opt_root_dir		= 'r',
+	opt_config		= 'q',
+	opt_compressor		= 'c',
+	opt_sign		= 's',
+	opt_hash_type		= 'h',
+	/* option list without short arg */
+	opt_chunk_size		= 1000,
+	opt_dry_run,
+	opt_dump,
+	opt_no_strip,
+	opt_case_insensitive,
+	opt_metadata_size,
+	opt_super_page_size,
+	opt_all_root,
+	opt_pub_rsa_key,
+	opt_tmp_dir,
+	opt_p_rsa_key,
+	opt_q_rsa_key,
+	opt_sign_all,
+	opt_min_comp_size,
+	opt_aes_key,
+	opt_encrypt_exec,
+	opt_encrypt_all,
+	opt_prof_data,
+	opt_min_space_saving_ratio,
+	opt_hash_priv_rsa_key,
+	opt_help,
+	opt_version,
+};
+
 int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 {
+	const char *short_options = "e:ivVz:t:r:q:c:s:h:";
+	const struct option long_options[] = {
+		{"erase-block-size",	required_argument,	NULL, opt_erase_block_size},
+		{"chunk-size",		required_argument,	NULL, opt_chunk_size},
+		{"image-creation",	no_argument,		NULL, opt_image_creation},
+		{"dry-run",		no_argument,		NULL, opt_dry_run},
+		{"verbose",		no_argument,		NULL, opt_verbose},
+		{"Verbose",		no_argument,		NULL, opt_Verbose},
+		{"dump",		required_argument,	NULL, opt_dump},
+		{"image-size",		required_argument,	NULL, opt_image_size},
+		{"timestamp",		required_argument,	NULL, opt_timestamp},
+		{"root-dir",		required_argument,	NULL, opt_root_dir},
+		{"no-strip",		no_argument,		NULL, opt_no_strip},
+		{"case-insensitive",	no_argument,		NULL, opt_case_insensitive},
+		{"metadata-size",	required_argument,	NULL, opt_metadata_size},
+		{"super_page_size",	required_argument,	NULL, opt_super_page_size},
+		{"config",		required_argument,	NULL, opt_config},
+		{"all-root",		no_argument,		NULL, opt_all_root},
+		{"hash-priv-rsa-key",	required_argument,	NULL, opt_hash_priv_rsa_key},
+		{"pub-rsa-key",		required_argument,	NULL, opt_pub_rsa_key},
+		{"tmp-dir",		required_argument,	NULL, opt_tmp_dir},
+		{"p-rsa-key",		required_argument,	NULL, opt_p_rsa_key},
+		{"q-rsa-key",		required_argument,	NULL, opt_q_rsa_key},
+		{"sign-all",		required_argument,	NULL, opt_sign_all},
+		{"min-comp-size",	required_argument,	NULL, opt_min_comp_size},
+		{"aes-key",		required_argument,	NULL, opt_aes_key},
+		{"encrypt-exec",		no_argument,		NULL, opt_encrypt_exec},
+		{"encrypt-all",		no_argument,		NULL, opt_encrypt_all},
+		{"prof-data",		required_argument,	NULL, opt_prof_data},
+		{"compressor",		required_argument,	NULL, opt_compressor},
+		{"min-space-saving-ratio",	required_argument,	NULL, opt_min_space_saving_ratio},
+		{"sign",		required_argument,	NULL, opt_sign},
+		{"hash-type",		required_argument,	NULL, opt_hash_type},
+		{"help",		no_argument,		NULL, opt_help},
+		{"version",		no_argument,		NULL, opt_version},
+		{NULL, 0, NULL, 0}
+	};
 	int opt = 0;
 	int long_index = 0;
 	int ret_code = 0;
-	char *refer_img = NULL;
-
 	sbi->min_compressed_size = -1;
 
 	while ((opt = getopt_long(argc, argv,
@@ -523,9 +374,10 @@ int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 				ret_code = -EWRONGOPTS;
 			}
 			break;
-		case opt_volume_size:
-			SET_FLAG(sbi->service_flags, LIMITED_SIZE);
+		case opt_image_size:
 			ret_code = read_image_size(sbi, optarg);
+			if (ret_code)
+				return ret_code;
 			break;
 		case opt_timestamp:
 			sbi->timestamp.seconds = atoll(optarg) /
@@ -680,20 +532,6 @@ int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 				return -EWRONGOPTS;
 			}
 			break;
-		case opt_jobs:
-			if (!optarg || !atoi(optarg)) {
-				log_error("jobs count is not set.\n");
-				return -EWRONGOPTS;
-			}
-			log_info("Select number of jobs : %d", atoi(optarg));
-			sbi->jobs = atoi(optarg);
-			break;
-		case opt_read_only:
-			SET_FLAG(sbi->service_flags, READ_ONLY_IMAGE);
-			break;
-		case opt_refer_image:
-			refer_img = optarg;
-			break;
 		case opt_help:
 			usage(true);
 			exit(0);
@@ -707,46 +545,6 @@ int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 			ret_code = -EWRONGOPTS;
 			break;
 		};
-
-		if (ret_code)
-			return ret_code;
-	}
-
-	/*
-	 * If no arguments left after parsing options, we assume
-	 * no disk name was given
-	 */
-	if ((argc - 1) < optind) {
-		log_error("No device or image name given");
-		return -EWRONGOPTS;
-	}
-	if ((argc - 1) > optind) {
-		log_error("Too many options");
-		return -EWRONGOPTS;
-	}
-	sbi->file_name = argv[optind];
-
-	/*
-	 * exec mkfs using parameters in refer image.
-	 * In normal case, the mkfs_refer_image() will not return.
-	 * Because it call exec() function.
-	 */
-	if (refer_img) {
-		if (!sbi->root_path ||
-		    !IS_FLAG_SET(sbi->service_flags, IMAGE)) {
-			log_error("Invalid refer-image parameter usage");
-			return -EWRONGOPTS;
-		}
-		mkfs_refer_image(argv[0], sbi->file_name,
-				 sbi->root_path, refer_img);
-		return -EWRONGOPTS;
-	}
-
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE) &&
-		IS_FLAG_SET(sbi->service_flags, NO_STRIP_IMAGE)) {
-		log_error("'no-strip' option is usable"
-			  " only in writable image creation mode");
-		return -EWRONGOPTS;
 	}
 
 	if (sbi->squash_list_file && sbi->compr_type) {
@@ -784,24 +582,6 @@ int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 		sbi->hash_len = VDFS4_SHA256_HASH_LEN;
 	}
 
-	if (IS_FLAG_SET(sbi->service_flags, IMAGE)) {
-		/* generate image file mode */
-		if (!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)
-		    && sbi->max_volume_size == 0) {
-			log_error("generating writable image needs"
-				  " specific size(-z)");
-			return -EWRONGOPTS;
-		}
-	} else {
-		/* initialize filesystem mode */
-		if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)
-		    || sbi->max_volume_size != 0) {
-			log_error("invalid combination of mkfs option.");
-			return -EWRONGOPTS;
-		}
-
-	}
-
 	if(IS_FLAG_SET(sbi->service_flags, ENCRYPT_EXEC) ||
 	    IS_FLAG_SET(sbi->service_flags, ENCRYPT_ALL)) {
 		if(!sbi->aes_key) {
@@ -810,6 +590,21 @@ int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi)
 			ret_code = -EWRONGOPTS;
 		}
 	}
+
+
+	/* If no arguments left after parsing options, we assume
+	 *  no disk name was given */
+	if ((argc - 1) < optind) {
+		log_error("No device or image name given");
+		ret_code = -EWRONGOPTS;
+	}
+
+	if ((argc - 1) > optind) {
+		log_error("Too many options");
+		ret_code = -EWRONGOPTS;
+	}
+
+	sbi->file_name = argv[optind];
 
 	if (sbi->profiling_data_path) {
 		FILE * fp;

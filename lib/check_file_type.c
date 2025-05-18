@@ -78,6 +78,7 @@ int is_exec_file_path(const char *path)
 {
 	int fd;
 	int ret = 0;
+	char err_msg[ERR_BUF_LEN];
 
 	if (!path) {
 		log_error("path is NULL\n");
@@ -86,15 +87,14 @@ int is_exec_file_path(const char *path)
 
 	fd = open(path, O_RDONLY);
 	if (fd < 0) {
-		log_error("Failed to open for checking exec err(%d) path=%s",
-			  errno, path);
+		log_error("Failed to open file for checking exec err=%s path=%s",
+				strerror_r(errno, err_msg, ERR_BUF_LEN), path);
 		exit(EXIT_FAILURE);
 	}
 
 	ret = is_exec_file_fd(fd);
 	if (ret < 0) {
-		log_error("Failed to check path for exec file ret(%d) path=%s",
-			  ret, path);
+		log_error("Failed to check path for exec file err=%s", ret);
 		exit(EXIT_FAILURE);
 	}
 
@@ -121,6 +121,7 @@ UNUSED static int is_ascii_file(char *buffer, int length)
 int is_exec_file_fd(int fd)
 {
 	unsigned char file_hdr[MAX_HDRLEN];
+	char err_msg[ERR_BUF_LEN];
 	int ret = 0;
 	int matched = 0;
 	unsigned int i;
@@ -146,8 +147,8 @@ int is_exec_file_fd(int fd)
 	/* getting file size */
 	ret = fstat(fd, &info);
 	if (ret) {
-		log_error("Failed to get stats for checking exec err(%d)",
-			  errno);
+		log_error("Failed to get stats for checking exec err=%s",
+				strerror_r(errno, err_msg, ERR_BUF_LEN));
 		exit(EXIT_FAILURE);
 	}
 

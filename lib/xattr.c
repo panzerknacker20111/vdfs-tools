@@ -815,6 +815,7 @@ error_exit:
 int get_set_xattrs(struct vdfs4_sb_info *sbi, char *path, u64 object_id)
 {
 	int len, ret = 0;
+	char err_msg[ERR_BUF_LEN];
 	char *val = malloc(XATTR_VAL_SIZE);
 	if (!val) {
 		log_error("MKFS can't allocate enough memory");
@@ -836,7 +837,8 @@ int get_set_xattrs(struct vdfs4_sb_info *sbi, char *path, u64 object_id)
 			errno = 0;
 		} else if (errno != ENODATA) {
 			ret = -errno;
-			log_error("Can't list xattr because of err(%d)", errno);
+			log_error("Can't list xattr because of %s",
+					strerror_r(errno, err_msg, ERR_BUF_LEN));
 			errno = 0;
 		}
 		goto exit;
@@ -850,8 +852,9 @@ int get_set_xattrs(struct vdfs4_sb_info *sbi, char *path, u64 object_id)
 		memset(val, 0, XATTR_VAL_SIZE);
 		size = getxattr(path, name, val, XATTR_VAL_SIZE);
 		if (size < 0) {
-			log_error("Can not get xattr %s for %s(err:%d)",
-					name, path, errno);
+			log_error("Can not get xattr %s for %s: %s",
+					name, path,
+					strerror_r(errno, err_msg, ERR_BUF_LEN));
 			ret = -1;
 			goto exit;
 		}
@@ -874,6 +877,7 @@ exit:
 int unpack_xattr(struct vdfs4_btree *xattr_tree, char *path, u64 object_id)
 {
 	int ret = 0;
+	char err_msg[ERR_BUF_LEN];
 	char name[VDFS4_FULL_PATH_LEN];
 	struct vdfs4_xattrtree_record *record = xattrtree_get_first_record(
 			xattr_tree, object_id, VDFS4_BNODE_MODE_RW);
@@ -888,14 +892,15 @@ int unpack_xattr(struct vdfs4_btree *xattr_tree, char *path, u64 object_id)
 		memset(name, 0, sizeof(name));
 		memcpy(name, record->key->name, record->key->name_len);
 		if (setxattr(path, name, (void *)(record->val + 1),
-			     (size_t)(*(unsigned char *)record->val), 0)) {
-			log_error("cannot set xattr %s for file %s"
-				  " (err:%d)\n",
-				  record->key->name, path,
-				  errno);
-			ret = -errno;
-			goto exit;
-		}
+					(size_t)(*(unsigned char *)record->val),
+					XATTR_CREATE)) {
+				log_error("cannot set xattr %s for file %s:"
+						" %s\n",
+						 record->key->name, path,
+						 strerror_r(errno, err_msg, ERR_BUF_LEN));
+				ret = -errno;
+				goto exit;
+			}
 		ret = xattrtree_get_next_record(record);
 		if (ret) {
 			if (ret == -ENOENT)

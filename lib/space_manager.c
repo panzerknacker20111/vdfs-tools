@@ -179,16 +179,6 @@ static int64_t get_free_space(struct vdfs4_sb_info *sbi,
 
 	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
 		u_int64_t first_free_address = root->first_free_address;
-		__u64 used_size;
-
-		/* image used size check */
-		used_size = block_to_byte(first_free_address + length,
-				     sbi->block_size);
-		if (IS_FLAG_SET(sbi->service_flags, LIMITED_SIZE)
-		    && sbi->min_volume_size < used_size) {
-			return -ENOSPC;
-		}
-
 		if (offset != ADDR_ANY) {
 			if (offset != root->first_free_address)
 				return -1;
@@ -263,7 +253,7 @@ int init_space_manager(struct vdfs4_sb_info *sbi)
 	assert(sbi->log_blocks_in_leb);
 	sign_crc_len = CRC32_SIZE + FSM_BMP_MAGIC_LEN;
 
-	space_manager_info->bits_count = (sbi->max_volume_size
+	space_manager_info->bits_count = (sbi->image_size
 			- sbi->vdfs4_start_block) / sbi->block_size;
 
 	/* Align on_disk_size to the block size boundary */
@@ -376,27 +366,19 @@ int get_iblock_size(struct vdfs4_sb_info *sbi, __u8 type)
 int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 		struct vdfs4_subsystem_data *subsystem)
 {
-	int ret = 0;
-	int idx = VDFS4_SF_INDEX(subsystem->sub_system_id);
+	int ret = 0, idx;
 	u_int32_t size_in_blocks;
 	u64 new_size, new_size2;
 	__u64 offset = 0;
 	int subsystem_is_tree = 0;
 	struct vdfs4_extent_info *extent = sbi->snapshot.metadata_extent;
+	__u32 *used_extents = &sbi->snapshot.snapshot_subsystem.fork.
+			used_extents;
 	unsigned int table_size, iblock_count, iblock_size;
 	unsigned int count;
 	__u64 start_block;
 	struct vdfs4_base_table_record *table;
-
-	struct vdfs4_base_table *base_table = (struct vdfs4_base_table *)
-				(sbi->snapshot.snapshot_subsystem.buffer);
-
-	struct vdfs4_meta_hashtable *hashtable = (struct vdfs4_meta_hashtable *)
-				(sbi->meta_hashtable.subsystem.buffer);
-
-	u_int32_t buffer_size  = sbi->snapshot.snapshot_subsystem.buffer_size;
-	u_int32_t buffer_size2 = sbi->meta_hashtable.subsystem.buffer_size;
-
+	u_int32_t buffer_size, buffer_size2;
 	if (is_tree(subsystem->sub_system_id)) {
 		struct vdfs_tools_btree_info *tree;
 		switch (subsystem->sub_system_id) {
@@ -420,13 +402,20 @@ int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 						sbi->block_size);
 
 	/* update basetable info */
+	buffer_size = sbi->snapshot.snapshot_subsystem.buffer_size;
+
+	struct vdfs4_base_table *base_table = (struct vdfs4_base_table *)
+			(sbi->snapshot.snapshot_subsystem.buffer);
+
 	iblock_size = get_iblock_size(sbi, subsystem->sub_system_id);
 	iblock_count = size_in_blocks / iblock_size;
 	if (subsystem->sub_system_id == VDFS4_SNAPSHOT_INO) {
 		extent = &sbi->snapshot.tables_extent;
+		used_extents = &sbi->snapshot.tables_extent_used;
 		goto alloc;
 	} else if (subsystem->sub_system_id > VDFS4_LSFILE) {
 		extent = &subsystem->fork.extents[0];
+		used_extents = &subsystem->fork.used_extents;
 		goto alloc;
 	}
 	table_size = sizeof(struct vdfs4_base_table_record) * iblock_count;
@@ -437,6 +426,7 @@ int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 	if (!base_table)
 		return -ENOMEM;
 
+	idx = VDFS4_SF_INDEX(subsystem->sub_system_id);
 	sbi->snapshot.snapshot_subsystem.buffer = (char *)base_table;
 	memset((char *)(sbi->snapshot.snapshot_subsystem.buffer +
 			sbi->snapshot.snapshot_subsystem.buffer_size), 0,
@@ -447,6 +437,11 @@ int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 	sbi->snapshot.snapshot_subsystem.buffer_size = new_size;
 
 	/* update meta hashtable info */
+	buffer_size2 = sbi->meta_hashtable.subsystem.buffer_size;
+
+	struct vdfs4_meta_hashtable *hashtable = (struct vdfs4_meta_hashtable *)
+			(sbi->meta_hashtable.subsystem.buffer);
+
 	if (subsystem->sub_system_id == VDFS4_SPACE_BITMAP_INO) {
 		/* just empty space for non bnode crc */
 		new_size2 = sbi->meta_hashtable.subsystem.buffer_size +
@@ -488,11 +483,8 @@ alloc:
 	ret = allocate_space(sbi, extent->first_block + extent->block_count ,
 			size_in_blocks + offset,
 			(u_int64_t *)&start_block);
-	if (ret) {
-		log_error("%s: failed to allocate space for subsystem(%d)",
-			  subsystem->subsystem_name, ret);
+	if (ret)
 		return ret;
-	}
 
 	log_activity("%s: space allocated from %llu to %llu block, size %lu",
 			subsystem->subsystem_name,
@@ -505,6 +497,7 @@ alloc:
 		assert(extent->first_block + extent->block_count ==
 			start_block);
 	if (subsystem->sub_system_id <= VDFS4_LSFILE) {
+
 		start_block = VDFS4_GET_MBLOCK(start_block,
 			sbi->snapshot.metadata_extent[0].first_block);
 		for (count = 0; count < iblock_count; count++) {
@@ -696,7 +689,7 @@ fill_table:
  */
 
 
-u64 metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock)
+int metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock)
 {
 	u_int32_t length;
 	int i;

@@ -35,7 +35,6 @@
 #include <zlib.h>
 #include <signal.h>
 #include <crypto_lock.h>
-#include <execinfo.h>
 
 unsigned int vdfs4_debug_mask = 0
 		/*+ VDFS4_DBG_INO*/
@@ -139,9 +138,7 @@ int insert_hlinks_data(struct vdfs4_sb_info *sbi, u64 *file_offset_abs)
 				list->new_ino_n, NULL, 0, VDFS4_BNODE_MODE_RW);
 		if (IS_ERR(record))
 			return -ENOMEM;
-
 		file_rec = record->val;
-		file_rec->common.flags &= ~(1 << VDFS4_HLINK_TUNE_TRIED);
 
 		if (IS_FLAG_SET(file_rec->common.flags,
 				VDFS4_COMPRESSED_FILE))
@@ -273,6 +270,7 @@ int fill_image_metadata(struct vdfs4_sb_info *sbi)
 int fill_image_data(struct vdfs4_sb_info *sbi)
 {
 	u64 file_offset = 0;
+	char err_msg[ERR_BUF_LEN];
 	int ret = 0;
 
 	file_offset = get_metadata_size(sbi);
@@ -297,14 +295,24 @@ int fill_image_data(struct vdfs4_sb_info *sbi)
 		ret = insert_data(sbi, sbi->root_path, VDFS4_ROOT_INO,
 				&file_offset);
 		if (ret) {
-			log_error("Error when insert data(ret:%d)", ret);
+			log_error("Error when insert data - %s",
+					strerror_r(-ret, err_msg, ERR_BUF_LEN));
 			return ret;
 		}
 		ret = insert_hlinks_data(sbi, &file_offset);
 		if (ret) {
-			log_error("Error when insert hlinks data(ret:%d)", ret);
+			log_error("Error when insert hlinks data - %s",
+					strerror_r(-ret, err_msg, ERR_BUF_LEN));
 			return ret;
 		}
+	}
+
+	if ((!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) &&
+		(file_offset + block_to_byte(sbi->snapshot.metadata_size,
+			sbi->block_size)) > sbi->min_image_size) {
+		ret = -ENOSPC;
+		log_error("Size of root dir is more than image size");
+		return ret;
 	}
 
 	return ret;
@@ -592,12 +600,14 @@ int insert_metadata(struct vdfs4_sb_info *sbi, char *dir_path, int parent_id,
 	struct stat info;
 	int obj_id;
 	__u64 obj_count = 0;
+	char err_msg[ERR_BUF_LEN];
 	ret = 0;
 
 	dir = opendir(dir_path);
 
 	if (dir == NULL) {
-		log_error("Can't open dir %s(err:%d)", dir_path, errno);
+		log_error("Can't open dir %s - %s", dir_path,
+				strerror_r(errno, err_msg, ERR_BUF_LEN));
 		return errno;
 	}
 
@@ -618,8 +628,8 @@ int insert_metadata(struct vdfs4_sb_info *sbi, char *dir_path, int parent_id,
 		strncat(path, data->d_name, strlen(data->d_name));
 		ret = lstat(path, &info);
 		if (ret) {
-			log_error("Can't get stat information for %s(err:%d)",
-				  path, errno);
+			log_error("Can't get stat information for %s - %s",
+					path, strerror_r(errno, err_msg, ERR_BUF_LEN));
 			goto exit;
 		}
 
@@ -672,7 +682,7 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	/*sbi->xattrtree.tree.name = subsystem_names[6];
 	sbi->small_area_bitmap.name = subsystem_names[7];
 	sbi->small_area.name = subsystem_names[8];*/
-	if (sbi->max_volume_size && sbi->max_volume_size < MIN_VOLUME_SIZE) {
+	if (sbi->image_size && sbi->image_size < MIN_VOLUME_SIZE) {
 		log_error("Can't make file less then %d",
 				MIN_VOLUME_SIZE);
 		return -EINVAL;
@@ -682,14 +692,14 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 
 
 	/* in case of image creation without size set in arguments */
-	if (sbi->max_volume_size == 0) {
-		log_info("Image size is not specified.");
-		sbi->max_volume_size = -1;
-		sbi->min_volume_size = -1;
-	} else {
-		log_info("Image size is %llu", sbi->max_volume_size);
-	}
-
+	if (sbi->image_size == 0) {
+		log_info("Image size is not specified,"
+				" read-only image will be created");
+		SET_FLAG(sbi->service_flags, READ_ONLY_IMAGE);
+		sbi->image_size = -1;
+		sbi->min_image_size = sbi->image_size;
+	} else
+		log_info("Image size is %llu", sbi->image_size);
 	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
 		log_info("Disk operations are in SIMULATE mode");
 
@@ -703,7 +713,7 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	log_info("Block size = %lu, erase block = %lu, super page = %lu",
 		sbi->block_size, sbi->erase_block_size,
 		sbi->super_page_size);
-	log_info("Disk size in blocks %llu", byte_to_block(sbi->max_volume_size,
+	log_info("Disk size in blocks %llu", byte_to_block(sbi->image_size,
 		sbi->block_size));
 
 	clock_gettime(CLOCK_REALTIME, &cur_time);
@@ -738,8 +748,7 @@ static int calc_and_add_crc(int file_id)
 	unsigned char buf[BLOCK_SIZE_DEFAULT]={0,};
 	unsigned int crc=0;
 	struct stat stat;
-	s64 calc_size, read_size;
-
+	ssize_t calc_size, read_size;
 	lseek(file_id, 0, SEEK_SET);
 	if (fstat(file_id, &stat)) {
 		return errno;
@@ -798,12 +807,7 @@ void init_threads(struct vdfs4_sb_info *sbi)
 	int tnum;
 	int ret = 0;
 	int path_len = 0;
-	if (sbi->jobs)
-		processors = sbi->jobs;
-	else
-		processors = sysconf(_SC_NPROCESSORS_ONLN);
-
-	log_activity("Create number of thread : %d ", processors);
+	processors = sysconf(_SC_NPROCESSORS_ONLN);
 
 	thread = malloc(processors * sizeof(struct thread_info));
 	thread_file = malloc(processors * sizeof(struct thread_file_info));
@@ -937,50 +941,14 @@ void destroy_threads(void)
  * @param [in] sbi		Superblock runtime structure
  * @return 0 on success, or error code
  */
-static int handle_used_space(struct vdfs4_sb_info *sbi)
+static void print_used_space(struct vdfs4_sb_info *sbi)
 {
 	struct vdfs4_extended_super_block esb = sbi->esb;
-	struct vdfs4_subsystem_data *mehs_subs =
-		&(sbi->meta_hashtable.subsystem);
 	long long unsigned int used_block;
-	uint64_t used_size;
-	int ret = 0;
-
-	if (!(IS_FLAG_SET(sbi->service_flags, IMAGE)))
-		return ret;
-
 	/* Because only one struct vdfs4_extent is made during initial image creation,
 	    it's enough to refer first entry in this time */
-	used_block = le64_to_cpu(esb.meta[0].length)
-		+ le64_to_cpu(esb.meta[0].begin);
-	if (IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)
-	    && sbi->rsa_key) {
-		used_block += mehs_subs->fork.extents[0].block_count;
-	}
-
-	/* crc at the end of image file */
-	used_block += 1;
-
-	used_size = block_to_byte(used_block, sbi->block_size);
-	log_activity("Used size : %llu KB", used_size / 1024);
-
-	if (IS_FLAG_SET(sbi->service_flags, LIMITED_SIZE) &&
-	    used_size > sbi->min_volume_size) {
-		log_error("the image size(-z) is not enough");
-		return -ENOSPC;
-	}
-
-	if (IS_FLAG_SET(sbi->service_flags, SIMULATE))
-		return ret;
-
-	/* make suitable image size */
-	if (IS_FLAG_SET(sbi->service_flags, NO_STRIP_IMAGE))
-		ret = ftruncate(sbi->disk_op_image.file_id,
-				sbi->max_volume_size);
-	else
-		ret = ftruncate(sbi->disk_op_image.file_id, used_size);
-
-	return ret;
+	used_block = le64_to_cpu(esb.meta[0].length) + le64_to_cpu(esb.meta[0].begin);
+	log_activity("Used size : %llu KB", used_block * 4); //Block size is 4KB
 }
 
 /**
@@ -998,15 +966,12 @@ static void sig_handler(int signo)
 	void *array[10];
 	size_t size;
 
-	log_error("[%3us] mkfs.vdfs receive %d signal!!!",
-		  get_elapsed_time(), signo);
-
-	size = backtrace(array, 10);
-	log_error("+------ backtrace(%2d,%2d) ------+", signo, size);
-	backtrace_symbols_fd(array, size, STDERR_FILENO);
-	log_error("+------------------------------+");
+	log_error("mkfs.vdfs receive %d signal!!!\n", signo);
 	fflush(stdout);
 	fflush(stderr);
+
+	size = backtrace(array, 10);
+	backtrace_symbols_fd(array, size, STDERR_FILENO);
 
 	signal(signo, SIG_DFL);
 	raise(signo);
@@ -1017,9 +982,6 @@ int main(int argc, char *argv[])
 	int ret = 0, i;
 	struct vdfs4_sb_info sbi;
 	struct list_head install_task_list;
-
-	/* for setting process start time. */
-	get_elapsed_time();
 
 	print_version();
 	INIT_LIST_HEAD(&install_task_list);
@@ -1196,15 +1158,14 @@ int main(int argc, char *argv[])
 		goto err_destroy_all;
 
 	if (!IS_FLAG_SET(sbi.service_flags, READ_ONLY_IMAGE)) {
-		ret = flush_subsystem(&sbi, &sbi.space_manager_info.subsystem);
-		if (ret)
-			goto err_destroy_all;
-	} else if (sbi.rsa_key) {
 		ret = flush_hashtable(&sbi);
 		if (ret)
 			goto err_destroy_all;
-	}
 
+		ret = flush_subsystem(&sbi, &sbi.space_manager_info.subsystem);
+		if (ret)
+			goto err_destroy_all;
+	}
 	ret = prepare_superblocks(&sbi);
 	if (ret)
 		goto err_destroy_all;
@@ -1212,17 +1173,13 @@ int main(int argc, char *argv[])
 	if (ret)
 		goto err_destroy_all;
 
-	ret = handle_used_space(&sbi);
-	if (ret)
+	//Do sync
+	if (fsync(sbi.disk_op_image.file_id)) {
+		log_error("failed to fsync (err:%d)\n", errno);
 		goto err_destroy_all;
+	}
 
 	if (!IS_FLAG_SET(sbi.service_flags, SIMULATE)) {
-		//Do sync
-		if (fsync(sbi.disk_op_image.file_id)) {
-			log_error("failed to fsync (err:%d)\n", errno);
-			goto err_destroy_all;
-		}
-
 		if (IS_FLAG_SET(sbi.service_flags, IMAGE)) {
 			//write CRC of [0 ~ 'file size-4K']
 			ret = calc_and_add_crc(sbi.disk_op_image.file_id);
@@ -1235,6 +1192,8 @@ int main(int argc, char *argv[])
 				goto err_destroy_all;
 		}
 	}
+
+	print_used_space(&sbi);
 
 err_destroy_all:
 	if (ret)
@@ -1268,8 +1227,6 @@ err_exit:
 	}
 	else {
 		remove_image_file(&sbi);
-		if (ret == -ENOSPC)
-			log_error("Mkfs can't allocate enough disk space");
 		log_error("mkfs.vdfs was failed...!!");
 	}
 err_before_open:
