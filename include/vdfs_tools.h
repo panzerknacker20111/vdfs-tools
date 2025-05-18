@@ -366,7 +366,7 @@ struct vdfs4_sb_info {
 	struct vdfs4_btree       *xattr_tree;
 
 /*---------------------------- vdfs4-tools unique part ------------------------*/
-
+	__u64 max_volume_size;
 	u_int64_t first_sb_block;
 	u_int64_t first_debug_area_block;
 	u_int64_t last_sb_block;
@@ -395,8 +395,12 @@ struct vdfs4_sb_info {
 	struct vdfs4_timespec timestamp;
 	/* minimal image size in bytes */
 	u_int64_t min_image_size;
+	/** Filesystem Volume size in bytes (max) */
+	u_int64_t max_volume_size;
 	/* normal image size */
 	u_int64_t image_size;
+	/** Generated Image file size */
+	u_int64_t image_file_size;
 	/** Size of metadata of new filesystem in bytes */
 	unsigned long long metadata_size;
 	/** Device or image file name */
