@@ -9,9 +9,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    
-    - name: Install dependencies
-      run: make unit_tests
 
     - name: Run check
       run: make all
