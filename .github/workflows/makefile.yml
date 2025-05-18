@@ -9,5 +9,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Build
-      run: make
+    - uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: make unit_tests
+
+    - name: Run check
+      run: make all
