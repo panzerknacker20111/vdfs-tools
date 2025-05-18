@@ -365,21 +365,27 @@ struct vdfs4_sb_info {
 	struct vdfs4_btree       *extents_tree;
 	struct vdfs4_btree       *xattr_tree;
 
-	__u8 sign_type;
-
 /*---------------------------- vdfs4-tools unique part ------------------------*/
+
+	u_int64_t first_sb_block;
+	u_int64_t first_debug_area_block;
+	u_int64_t last_sb_block;
 	/** The VDFS4 on-disk extended superblock */
 	struct vdfs4_extended_super_block esb;
 	/* The VDFS4 disk operation struct */
 	struct vdfs4_image disk_op_image;
+	/* dlink inode*/
+	struct vdfs4_dlink_info dl_inf;
 	/** Flags used for tool's service needs */
 	unsigned int service_flags;
 	/** Super-page size of flash in bytes */
 	unsigned int super_page_size;
 	/** */
+	u_int64_t volume_size_in_erase_blocks;
 
 	char	volume_name[16];
 	char *tmpfs_dir;
+	u_int32_t total_super_pages_count;
 
 	/** Dump file descriptor */
 	FILE *dump_file;
@@ -387,12 +393,10 @@ struct vdfs4_sb_info {
 	FILE *squash_list_file;
 	/** Filesystem timestamp */
 	struct vdfs4_timespec timestamp;
-	/** Filesystem Volume size in bytes (min) */
-	u_int64_t min_volume_size;
-	/** Filesystem Volume size in bytes (max) */
-	u_int64_t max_volume_size;
-	/** Generated Image file size */
-	u_int64_t image_file_size;
+	/* minimal image size in bytes */
+	u_int64_t min_image_size;
+	/* normal image size */
+	u_int64_t image_size;
 	/** Size of metadata of new filesystem in bytes */
 	unsigned long long metadata_size;
 	/** Device or image file name */
@@ -405,17 +409,11 @@ struct vdfs4_sb_info {
 	char *rsa_q_file;
 	vdfs4_hash_algorithm_func *hash_alg;
 	int hash_len;
-
-	/** Encryption stuff */
-	AES_KEY *aes_key;
-	unsigned char raw_encryption_key[16];
-
 	/** Path to the directory that contains files to be placed in image */
 	char *root_path;
+	unsigned int all_root;
 	/* snapshot info */
 	struct snapshot_info snapshot;
-
-	struct meta_hashtable_info meta_hashtable;
 
 	struct vdfs4_subsystem_data inode_bitmap;
 	__u64 last_allocated_inode_number;
@@ -431,28 +429,35 @@ struct vdfs4_sb_info {
 
 	/** Free space management */
 	struct space_manager_info space_manager_info;
+	__u64 last_allocated_offset;
 
 	struct vdfs4_extent_info debug_area;
 
 
 	struct hlink_list_item hlinks_list;
+	u_int32_t vdfs4_volume;
+	void *vdfs4_old_extents;
+	void *old_partitions;
+	__u8 init;
 	__u64 bnodes_count;
 	__u32 vdfs4_start_block;
+	__u32 uniro_first_partition;
+	__u32 unirw_first_partition;
+	char *old_partition_txt;
+	char *new_partition_txt;
+	__u64 new_uniro_size;
+	__u64 new_unirw_size;
+	struct list_head compress_list;
 	struct list_head data_ranges;
+	struct list_head dl_data_ranges;
+	struct list_head dl_comp_data_ranges;
+	struct list_head dl_comp_enc_data_ranges;
+	struct list_head dl_enc_data_ranges;
+	struct list_head dl_auth_data_ranges;
+	struct list_head dl_ro_auth_data_ranges;
+	struct list_head dl_signed_data_ranges;
 	/* log chunk size */
 	int log_chunk_size;
-	__u8 is_superblock_reformatted;
-	struct vdfs4_super_block sb_format_history;
-	struct error_tracer err_tracer;
-	int min_compressed_size;
-	char *compr_type;
-	int min_space_saving_ratio;
-	int jobs;
-
-	/* Profiling data (vdfs-squeeze) */
-	char *profiling_data_path;
-	struct list_head prof_data;
-	struct vdfs4_dlink_info dl_inf;
 };
 
 struct profiled_file {
