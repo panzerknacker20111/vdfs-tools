@@ -432,6 +432,11 @@ struct vdfs4_sb_info {
 	char *rsa_q_file;
 	vdfs4_hash_algorithm_func *hash_alg;
 	int hash_len;
+
+	/** Encryption stuff */
+	AES_KEY *aes_key;
+	unsigned char raw_encryption_key[16];
+
 	/** Path to the directory that contains files to be placed in image */
 	char *root_path;
 	unsigned int all_root;
@@ -481,6 +486,19 @@ struct vdfs4_sb_info {
 	struct list_head dl_signed_data_ranges;
 	/* log chunk size */
 	int log_chunk_size;
+	__u8 is_superblock_reformatted;
+	struct vdfs4_super_block sb_format_history;
+	struct error_tracer err_tracer;
+	int min_compressed_size;
+	char *compr_type;
+	int min_space_saving_ratio;
+	int jobs;
+
+	/* Profiling data (vdfs-squeeze) */
+
+	char *profiling_data_path;
+	struct list_head prof_data;
+
 };
 
 struct profiled_file {
