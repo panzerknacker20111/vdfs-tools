@@ -10,4 +10,4 @@ jobs:
 
     steps:
     - name: Build
-      run: make mkfs
+      run: make
