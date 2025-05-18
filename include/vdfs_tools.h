@@ -37,7 +37,11 @@
 #include "xattrtree.h"
 #include "errors.h"
 #include "logger.h"
+#include "encrypt.h"
 #include <openssl/rsa.h>
+
+#define VDFS_TOOLS_VERSION TOOLS_VERSION	//version is defined in makefile
+
 /* constant used to separate seconds from full time in nanoseconds */
 #define NANOSEC_DIVIDER 1000000000
 #define VDFS4_FULL_PATH_LEN	1023
@@ -71,33 +75,37 @@ typedef unsigned char * (vdfs4_hash_algorithm_func)(const unsigned char *d, size
 		unsigned char *md);
 enum tools_flags {
 	/* MKFS flag bits positions */
-	IMAGE = 0,
-	SIMULATE,
-	VERBOSE,
-	NO_STRIP_IMAGE,
-	READ_ONLY_IMAGE,
-	CASE_INSENSITIVE,
-	ALL_ROOT,
+	/*00*/ IMAGE = 0,
+	/*01*/ SIMULATE,
+	/*02*/ VERBOSE,
+	/*03*/ MORE_VERBOSE,
+	/*04*/ NO_STRIP_IMAGE,
+	/*05*/ READ_ONLY_IMAGE,
+	/*06*/ CASE_INSENSITIVE,
+	/*07*/ ALL_ROOT,
 	/* FSCK flag bits positions */
-	SQUASH_CONF_RESTORE,
-	COLOR,
-	CATTREE_BNODE_DUMP,
-	EXTTREE_BNODE_DUMP,
-	PARSE_DEBUG_AREA,
-	FIND_BY_NAME,
-	PERFORM_INJECTION,
-	RESTORE,
-	UPDATE_CRC,
+	/*08*/ SQUASH_CONF_RESTORE,
+	/*09*/ COLOR,
+	/*10*/ CATTREE_BNODE_DUMP,
+	/*11*/ EXTTREE_BNODE_DUMP,
+	/*12*/ PARSE_DEBUG_AREA,
+	/*13*/ FIND_BY_NAME,
+	/*14*/ DUMP_META_BLOCK,
+	/*15*/ PERFORM_INJECTION,
+	/*16*/ RESTORE,
+	/*17*/ UPDATE_CRC,
 	/*Conversion utility flags*/
-	CHECK,
-	TRANSFORM,
+	/*18*/ CHECK,
+	/*19*/ TRANSFORM,
 	/* MKFS extra flags */
-	IMAGE_CRC32,
-	NO_DECODE,
-	SIGN_ALL,
-	SHA_256,
-	MD_5,
-	SHA_1
+	/*20*/ NO_DECODE,
+	/*21*/ SIGN_ALL,
+	/*22*/ SHA_256,
+	/*23*/ MD_5,
+	/*24*/ SHA_1,
+	/*25*/ ENCRYPT_EXEC,
+	/*26*/ ENCRYPT_ALL,
+	/*27*/ LIMITED_SIZE,
 };
 
 /* space manager constants */
@@ -118,10 +126,11 @@ enum tools_flags {
 #define DEBUG_AREA_DEFAULT_SIZE 4
 #define SMALL_AREA_CELL_DEFAULT 1024
 #define DEFAULT_SMALL_AREA_SIZE SUPER_PAGE_SIZE_DEFAULT
+#define DEFAULT_MIN_SPACE_SAVING_RATIO (25)
 
 #define VDFS4_VERSION_DEFAULT 0x10
 
-#define RSA_KEY_SIZE	128
+#define RSA_KEY_SIZE	256
 
 #define HEAD_BNODE_ID 0
 #define ROOT_BNODE_ID 1
@@ -142,6 +151,46 @@ extern const unsigned int vdfs_tools_mode;
 #define VDFS4_TOOLS_GET_BNODE_DEBUG     (2 << 1)
 #define VDFS4_TOOLS_GET_BNODE_FROM_VOLUME_PUT		(4 << 1)
 
+/* This is for vdfs image update verification */
+#define VDFS_IMG_VERIFY_MAGIC (0x0DEFACED)
+#define VDFS_IMG_VERIFY_OFFSET (0x1000)	//Last page of area.
+#define VDFS_DBG_AREA_OFFSET (0x2000)	//It is fixed
+#define VDFS_DBG_AREA_MAGIC "Vdbg"
+#define VDFS_DBG_AREA_VER (1)
+#define VDFS_DBG_VERIFY_START (0x3aa33aa3)
+#define VDFS_DBG_VERIFY_OK (0x5a5a5a5a)
+#define VDFS_DBG_VERIFY_FAIL (0xdead4ead)
+#define VDFS_DBG_VERIFY_MKFS (0x0a0a0a0a)
+#define VDFS_DBG_ERR_MAX_CNT (10)
+struct vdfs_err_info
+{
+	uint16_t idx;
+	uint16_t vdfs_err_type_k;
+	uint32_t proof[2];
+	uint32_t reserved;
+	uint8_t note[32];
+} __attribute__((packed));
+
+struct vdfs_dbg_info
+{
+	uint32_t verify_result;
+	uint32_t err_count;
+}__attribute__((packed));
+
+struct vdfs_dbg_area_map
+{
+	uint8_t magic[4];
+	uint32_t dbgmap_ver;
+	uint32_t reserved[6];
+	union {
+		struct vdfs_dbg_info dbg_info;
+		uint32_t for_fixed_size[120];
+	} dbg;
+	union {
+		struct vdfs_err_info err_list[VDFS_DBG_ERR_MAX_CNT];
+		uint32_t for_fixed_size[128];
+	} err;
+} __attribute__((packed));
 
 /** VDFS4 default values end*/
 
@@ -156,61 +205,6 @@ struct vdfs4_version {
 	__u8 minor:4;
 } __packed;
 
-struct old_vdfs4_super_block {
-	/** magic */
-	__u8	signature[7];		/* 0x5346434D4D6531 SFCMMe1 */
-	/** The version of eMMCFS filesystem */
-	struct vdfs4_version	version;
-	/** log2 (Block size in bytes) */
-	__u8	log_block_size;
-	/** log2 (LEB size in bytes) */
-	__u8	log_leb_size;
-
-	/** Lotal lebs count */
-	__le64	total_leb_count;
-
-	/** Total volume encodings */
-	__le64	volume_encodings;
-
-	/** Creation timestamp */
-	struct vdfs4_timespec	creation_timestamp;
-
-	/** 128-bit uuid for volume */
-	__u8	volume_uuid[16];
-	/** Volume name */
-	char	volume_name[16];
-
-	/** File driver git repo branch name */
-	char mkfs_git_branch[64];
-	/** File driver git repo revision hash */
-	char mkfs_git_hash[40];
-
-	/** Case insensitive mode */
-	__u8 case_insensitive;
-	/** Padding */
-	__u8	reserved[311];
-	/** Checksum */
-	__le32	checksum;
-} __packed;
-/*
- * @struct Node of the list
- */
-struct list_node {
-	void *data;
-	u_int32_t data_size;
-	struct list_node *next;
-	struct list_node *prev;
-};
-/*
- * @struct The main structure for list
- */
-struct vdfs4_list {
-	struct list_node *current_node;
-	struct list_node head_node;
-	u_int32_t count;
-};
-
-
 /** The struct keeps an vdfs4 image data. This is a handle to call disk
  * operation.
 */
@@ -218,25 +212,7 @@ struct vdfs4_image {
 	/** file ip of opened device of file image */
 	int file_id;
 };
-struct vdfs4_dlink_info {
-	__u64 dlink_inode_comp;
-	__u64 dlink_inode;
-	__u64 dlink_inode_auth;
-	__u64 dlink_inode_ro_auth;
-	__u64 dlink_signed;
-	int dlink_file_comp_fd;
-	int dlink_file_fd;
-	int dlink_file_auth;
-	int dlink_file_ro_auth;
-	int dlink_file_signed;
-	char *dl_name_comp;
-	char *dl_name_auth;
-	char *dl_name_ro_auth;
-	char *dl_name;
-	char *dl_name_signed;
-	int compression_type;
-	int dlink_count;
-};
+
 /** @brief	Maintains private information for each vdfs4 sysbsystem
  *
  */
@@ -329,13 +305,33 @@ struct snapshot_info {
 	struct vdfs4_base_table *base_table;
 
 	__u32 preallocation_len;
+	__u32 checksum;
+};
+
+struct meta_hashtable_info {
+	/* hashtable subsystem */
+	struct vdfs4_subsystem_data subsystem;
+	/* hashtable checksum */
+	__u32 checksum;
 };
 
 struct vector {
 	u64 mem_size;
 	u64 size;
 	int data_size;
-	void *data;
+	char *data;
+};
+
+enum unpack_error_types {
+	UNPACK_CREATE_FILE_ERR,
+	UNPACK_CREATE_SYMLINK_ERR,
+	__NR_UNPACK_ERROR_TYPES,
+};
+
+struct error_tracer {
+	uint enabled;
+	uint errors[__NR_UNPACK_ERROR_TYPES];
+	u_int32_t err_count;
 };
 
 /** @brief	Maintains private super block information.
@@ -369,27 +365,21 @@ struct vdfs4_sb_info {
 	struct vdfs4_btree       *extents_tree;
 	struct vdfs4_btree       *xattr_tree;
 
-/*---------------------------- vdfs4-tools unique part ------------------------*/
+	__u8 sign_type;
 
-	u_int64_t first_sb_block;
-	u_int64_t first_debug_area_block;
-	u_int64_t last_sb_block;
+/*---------------------------- vdfs4-tools unique part ------------------------*/
 	/** The VDFS4 on-disk extended superblock */
 	struct vdfs4_extended_super_block esb;
 	/* The VDFS4 disk operation struct */
 	struct vdfs4_image disk_op_image;
-	/* dlink inode*/
-	struct vdfs4_dlink_info dl_inf;
 	/** Flags used for tool's service needs */
 	unsigned int service_flags;
 	/** Super-page size of flash in bytes */
 	unsigned int super_page_size;
 	/** */
-	u_int64_t volume_size_in_erase_blocks;
 
 	char	volume_name[16];
 	char *tmpfs_dir;
-	u_int32_t total_super_pages_count;
 
 	/** Dump file descriptor */
 	FILE *dump_file;
@@ -397,10 +387,12 @@ struct vdfs4_sb_info {
 	FILE *squash_list_file;
 	/** Filesystem timestamp */
 	struct vdfs4_timespec timestamp;
-	/* minimal image size in bytes */
-	u_int64_t min_image_size;
-	/* normal image size */
-	u_int64_t image_size;
+	/** Filesystem Volume size in bytes (min) */
+	u_int64_t min_volume_size;
+	/** Filesystem Volume size in bytes (max) */
+	u_int64_t max_volume_size;
+	/** Generated Image file size */
+	u_int64_t image_file_size;
 	/** Size of metadata of new filesystem in bytes */
 	unsigned long long metadata_size;
 	/** Device or image file name */
@@ -413,11 +405,17 @@ struct vdfs4_sb_info {
 	char *rsa_q_file;
 	vdfs4_hash_algorithm_func *hash_alg;
 	int hash_len;
+
+	/** Encryption stuff */
+	AES_KEY *aes_key;
+	unsigned char raw_encryption_key[16];
+
 	/** Path to the directory that contains files to be placed in image */
 	char *root_path;
-	unsigned int all_root;
 	/* snapshot info */
 	struct snapshot_info snapshot;
+
+	struct meta_hashtable_info meta_hashtable;
 
 	struct vdfs4_subsystem_data inode_bitmap;
 	__u64 last_allocated_inode_number;
@@ -433,37 +431,35 @@ struct vdfs4_sb_info {
 
 	/** Free space management */
 	struct space_manager_info space_manager_info;
-	__u64 last_allocated_offset;
 
 	struct vdfs4_extent_info debug_area;
 
 
 	struct hlink_list_item hlinks_list;
-	u_int32_t vdfs4_volume;
-	void *vdfs4_old_extents;
-	void *old_partitions;
-	__u8 init;
 	__u64 bnodes_count;
 	__u32 vdfs4_start_block;
-	__u32 uniro_first_partition;
-	__u32 unirw_first_partition;
-	char *old_partition_txt;
-	char *new_partition_txt;
-	__u64 new_uniro_size;
-	__u64 new_unirw_size;
-	struct list_head compress_list;
 	struct list_head data_ranges;
-	struct list_head dl_data_ranges;
-	struct list_head dl_comp_data_ranges;
-	struct list_head dl_comp_enc_data_ranges;
-	struct list_head dl_enc_data_ranges;
-	struct list_head dl_auth_data_ranges;
-	struct list_head dl_ro_auth_data_ranges;
-	struct list_head dl_signed_data_ranges;
 	/* log chunk size */
 	int log_chunk_size;
+	__u8 is_superblock_reformatted;
+	struct vdfs4_super_block sb_format_history;
+	struct error_tracer err_tracer;
+	int min_compressed_size;
+	char *compr_type;
+	int min_space_saving_ratio;
+	int jobs;
+
+	/* Profiling data (vdfs-squeeze) */
+	char *profiling_data_path;
+	struct list_head prof_data;
 };
 
+struct profiled_file {
+	struct list_head list;
+	char path[VDFS4_FULL_PATH_LEN];
+	__u32 chunk_count;
+	__u16* chunk_order;
+};
 
 static inline u_int64_t byte_to_block(u_int64_t val_in_byte,
 	u_int32_t block_size)
@@ -524,7 +520,7 @@ static inline __le64 get_volume_body_length(struct vdfs4_sb_info *sbi)
 {
 	__le64 volume_body_lenght = 0;
 
-	volume_body_lenght = byte_to_block_no_round(sbi->image_size,
+	volume_body_lenght = byte_to_block_no_round(sbi->max_volume_size,
 			sbi->block_size);
 	volume_body_lenght -= get_volume_body_start(sbi);
 	volume_body_lenght -= 1;
@@ -598,16 +594,9 @@ out:
 	return result;
 }
 
-static inline void config_file_format(void)
+static inline void print_version(void)
 {
-	printf("\tConfig file format:\n"\
-	"\t\tINSTALL\t\t/dir1/file1\t/dir2\n"\
-	"\t\tCOMPRESS=zlib\t/dir3/file3\n"\
-	"\t\tCOMPRESS=lzo\t/dir4\n"
-	"\t\tCOMPRESS=gzip\t/dir5/file5\n"
-	"\t\tCOMPRESS=zhw\t/dir6/file6\n"
-	"\t\tDLINK=zlib\t/dir7/file7\n"
-	"\t\tDLINK=zlib\t/dir8\n");
+	log_note("vdfs tool version : %s", TOOLS_VERSION);
 }
 
 void set_magic(void *magic_to_set, const char *magic_val);
@@ -618,7 +607,7 @@ void set_permissions_for_root_dir(struct vdfs4_posix_permissions
 
 int place_on_volume_subsystem(struct vdfs4_sb_info *sbi,
 		struct vdfs4_subsystem_data *subsystem);
-int metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock);
+u64 metablock_to_iblock(struct vdfs4_sb_info *sbi, u64 metablock);
 int iblock_to_metablock(struct vdfs4_sb_info *sbi, u64 iblock);
 /* Hard link tree functions */
 struct hlink_list_item *hl_list_item_find(struct hlink_list_item *head,
@@ -636,6 +625,11 @@ int place_on_volume_preallocation(struct vdfs4_sb_info *sbi);
 int init_snapshot(struct vdfs4_sb_info *sbi);
 int calculate_translation_tables_size(struct vdfs4_sb_info *sbi, int allocate);
 void destroy_snapshot(struct vdfs4_sb_info *sbi);
+
+/** meta hashtable functions */
+int init_hashtable(struct vdfs4_sb_info *sbi);
+int flush_hashtable(struct vdfs4_sb_info *sbi);
+void destroy_hashtable(struct vdfs4_sb_info *sbi);
 
 /* Hard link area functions */
 int init_hl_area(struct vdfs4_sb_info *sbi);
@@ -665,8 +659,6 @@ int vdfs4_write_bytes(struct vdfs4_sb_info *sb_info,
 			const void *src,
 			u_int64_t src_size);
 
-int copy_file_to_dlink(struct vdfs4_sb_info *sbi,
-		struct vdfs4_catalog_dlink_record *dl_rec, char *path);
 /** This function read dest_size bytes from the image. Start position of
  * reading is defined by offset.
 */
@@ -688,7 +680,7 @@ int copy_file_to_image(struct vdfs4_sb_info *sb_info, const char *src_filename,
 void copy_file_from_image(/*struct vdfs4_sb_info *sb_info,
 			const char *src_filename,
 			const char *dst_filename*/);
-off_t get_image_size(struct vdfs4_sb_info *sbi);
+int get_image_size(struct vdfs4_sb_info *sbi, u_int64_t *size);
 int create_hard_link(/*struct vdfs4_sb_info *sb_info,
 			const char *dst_filename,
 			const char *src_filename*/);
@@ -725,20 +717,17 @@ int place_on_volume_inode_id_alloc(struct vdfs4_sb_info *sbi,
 int flush_inode_id_alloc(struct vdfs4_sb_info *sbi);
 void destroy_inode_id_alloc(struct vdfs4_sb_info *sbi);
 u_int64_t get_free_inode_n(struct vdfs4_sb_info *sbi, int count);
-u_int64_t test_and_clear_inode_n(struct vdfs4_sb_info *sbi, __u64 ino_n);
+int test_and_clear_inode_n(struct vdfs4_sb_info *sbi, __u64 ino_n);
 void inode_bitmap_count_crc(struct vdfs4_sb_info *sbi);
 int fill_inode_bitmap(struct vdfs4_sb_info *sbi);
-/** vdfs4 list operations */
-void vdfs4_list_init(struct vdfs4_list *list);
-void vdfs4_add_to_list(struct vdfs4_list *list, void *data, u_int32_t data_size);
-inline void *vdfs4_get_cur_elem_data_from_list(struct vdfs4_list *list);
-inline void vdfs4_list_reset_to_first(struct vdfs4_list *list);
-void vdfs4_put_list_to_buffer(struct vdfs4_list *list, void *buffer, int offset,
-		int element_size);
+RSA *create_rsa_from_private_str(char *private_str);
 RSA *create_rsa(char *private_key, char *pub_key, char *q_file, char *p_file);
 int sign_rsa(unsigned char *buf, unsigned long buf_len,
 		unsigned char *rsa_hash, RSA *rsa_key,
 		vdfs4_hash_algorithm_func *hash_alg, int hash_len);
+int get_sign_type(RSA *key);
+int get_sign_length(RSA* key);
+
 /** catalog tree functions */
 int init_cattree(struct vdfs4_sb_info *sbi);
 int place_on_volume_cattree(struct vdfs4_sb_info *sbi);
@@ -801,7 +790,6 @@ void *get_elem(struct vector *v, u64 pos);
 void delete_elem(struct vector *v, u64 pos);
 
 /** utils.c functions */
-void print_version();
 void util_add_btree_size(struct vdfs4_sb_info *sbi, struct vdfs_tools_btree_info *tree);
 int util_sign_set_bits(char *buff, int buff_size, u_int64_t addr,
 		u_int32_t count, int block_size, int magic_len, int crc_size);
@@ -815,9 +803,10 @@ void util_clear_bits(char *buffer, u_int64_t addr, u_int32_t count);
 int util_test_bit(char *buffer, u_int64_t addr);
 
 int util_validate_crc(char *buff, int buff_size, int skip);
-void util_update_crc(char *buff, int buff_size, const char *magic,
+int util_update_crc(char *buff, int buff_size, const char *magic,
 		int magic_len);
 unsigned int slog(int block);
+unsigned int get_elapsed_time(void);
 
 /** small.c*/
 int init_small(struct vdfs4_sb_info *sbi);
@@ -825,8 +814,9 @@ void destroy_small(struct vdfs4_sb_info *sbi);
 u_int32_t test_and_set_small_area_bitmap_bit(struct vdfs4_sb_info *sbi);
 void sign_small_area_bitmap(struct vdfs4_sb_info *sbi);
 /** lib/check_file_type.c */
-int is_need_sign(int src_fd);
-
+int is_need_sign(int src_fd, const char *src_filename);
+int is_exec_file_path(const char* path);
+int is_exec_file_fd(int fd);
 
 int allocate_space_for_each_subsystem_block(struct vdfs4_sb_info *vdfs4_sbi,
 		int blocks_count, struct vdfs4_base_table_record *table,
@@ -853,8 +843,9 @@ void vdfs4_fill_cattree_record_value(struct vdfs4_cattree_record *record,
 		const struct vdfs4_timespec time_access,
 		u_int64_t begin,
 		u_int64_t length,
-		unsigned int block_size, int compress_to_dlink);
+		unsigned int block_size);
 int clean_superblocks_area(struct vdfs4_sb_info *sbi);
+int discard_volume(struct vdfs4_sb_info *sbi);
 int flush_superblocks(struct vdfs4_sb_info *sbi, int argc, char *argv[]);
 void generate_uuid(u_int8_t *uuid_array, u_int32_t uuid_length);
 int prepare_superblocks(struct vdfs4_sb_info *sbi);

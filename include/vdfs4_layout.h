@@ -60,8 +60,23 @@
 
 /* Magic Numbers.
  */
-#define VDFS4_LAYOUT_VERSION			"2006"
+#define VDFS4_LAYOUT_VERSION_2006		"2006" /* rsa1024 */
+#define VDFS4_LAYOUT_VERSION_2007		"2007"
+/* current layout version */
+#define VDFS4_LAYOUT_VERSION			VDFS4_LAYOUT_VERSION_2007
+	
+#define VDFS4_COMPR_LAYOUT_VER_05		0x0005
+#define VDFS4_COMPR_LAYOUT_VER_06		0x0006
+/* current layout version */
+#define VDFS4_COMPR_LAYOUT_VER			VDFS4_COMPR_LAYOUT_VER_06
+	
+#define VDFS4_COMPR_FILE_DESC_LEN_05	(4*8)
+#define VDFS4_COMPR_FILE_DESC_LEN_06	(5*8)
+/* current descriptor length (sizeof(struct vdfs4_comp_file_descr)) */
+#define VDFS4_COMPR_FILE_DESC_LEN 		VDFS4_COMPR_FILE_DESC_LEN_06
+
 #define VDFS4_SB_SIGNATURE			"VDFS"
+#define VDFS4_SB_SIGNATURE_REFORMATTED		"RFMT"
 #define VDFS4_SB_VER_MAJOR	1
 #define VDFS4_SB_VER_MINOR	0
 
@@ -70,6 +85,7 @@
 #define VDFS4_XATTR_REC_MAGIC			"XAre"
 #define VDFS4_SNAPSHOT_BASE_TABLE		"CoWB"
 #define VDFS4_SNAPSHOT_EXTENDED_TABLE		"CoWE"
+#define VDFS4_META_HASHTABLE			"MeHs"
 #define VDFS4_NODE_DESCR_MAGIC			0x644E		/*"dN"*/
 #define VDFS4_OOPS_MAGIC			"DBGe"
 
@@ -85,13 +101,19 @@
 #define VDFS4_COMPR_ZIP_FILE_DESCR_MAGIC	"Zip"
 #define VDFS4_COMPR_GZIP_FILE_DESCR_MAGIC	"Gzp"
 #define VDFS4_COMPR_LZO_FILE_DESCR_MAGIC	"Lzo"
-#define VDFS4_COMPR_ZHW_FILE_DESCR_MAGIC	"Zhw"
 #define VDFS4_COMPR_DESCR_START			'C'
 #define VDFS4_MD5_AUTH				'I'
 #define VDFS4_SHA1_AUTH				'H'
 #define VDFS4_SHA256_AUTH			'h'
 #define VDFS4_COMPR_EXT_MAGIC			"XT"
-#define VDFS4_COMPR_LAYOUT_VER			0x0005
+#define VDFS4_COMPR_NON_SQUEEZE			0xFFFF
+
+enum sign_type {
+	VDFS4_SIGN_NONE = 0x0,
+	VDFS4_SIGN_RSA1024 = 0x1,
+	VDFS4_SIGN_RSA2048 = 0x2,
+	VDFS4_SIGN_MAX,
+};
 
 #define VERSION_SIZE				(sizeof(u64))
 #define VDFS4_MOUNT_COUNT(version)	(0xffffffff & (__u32)(version >> 32))
@@ -111,14 +133,25 @@
 #define VDFS4_BIT_BLKSIZE(X, MAGIC_LEN)	(((X) -\
 		(MAGIC_LEN + CRC32_SIZE))<<3)
 
-#define VDFS4_CHUNK_FLAG_UNCOMPR		1
+#define VDFS4_CHUNK_FLAG_UNCOMPR		0x1
+#define VDFS4_CHUNK_FLAG_ENCRYPTED		0x2
+
 #define VDFS4_MD5_HASH_LEN			16
 #define VDFS4_SHA1_HASH_LEN			20
 #define VDFS4_SHA256_HASH_LEN			32
-#define VDFS4_CRYPTED_HASH_LEN			128
+#define VDFS4_RSA1024_SIGN_LEN			128
+#define VDFS4_RSA2048_SIGN_LEN			256
+#define VDFS4_MAX_CRYPTED_HASH_LEN		256
 #define VDFS4_HW_COMPR_PAGE_PER_CHUNK		32
 #define VDFS4_MIN_LOG_CHUNK_SIZE		12
 #define VDFS4_MAX_LOG_CHUNK_SIZE		20
+#define VDFS4_AES_NONCE_SIZE			8
+#define VDFS4_AES_KEY_LENGTH			16
+#define VDFS4_AES_CHUNK_ALIGN_LEN		16
+#define VDFS4_AES_CHUNK_ALIGN_START		16
+
+/* superblock encryption flags */
+#define VDFS4_VOLUME_ENCRYPTED			1
 
 /** Special inodes */
 enum special_ino_no {
@@ -225,21 +258,30 @@ struct vdfs4_iextent {
 	__le64	iblock;
 };
 
+#define VDFS4_SQUEEZE_PRIO_NON_PROFILED 0xFFFF
+
 struct vdfs4_comp_extent {
-	char magic[2];
+	union {
+		char magic[2];
+		__le16 profiled_prio;
+	};
 	__le16 flags;
 	__le32 len_bytes;
 	__le64 start;
-};
+} __attribute__((packed));
 
 struct vdfs4_comp_file_descr {
+	/* new fields are added before magic for easier backward compatibility */
+	__u8 reserved[7];
+	__u8 sign_type;
+	/* from here same as layout 0x0005 */
 	char magic[4];
 	__le16 extents_num;
 	__le16 layout_version;
 	__le64 unpacked_size;
 	__le32 crc;
 	__le32 log_chunk_size;
-	__le64 pad2; /* Alignment to vdfs4_comp_extent size */
+	__u8 aes_nonce[VDFS4_AES_NONCE_SIZE];
 };
 
 /** VDFS4 maintains information about the contents of a file using the
@@ -272,13 +314,6 @@ struct vdfs4_fork {
 
 #define VDFS4_SNAPSHOT_BASE_TABLE		"CoWB"
 #define VDFS4_SNAPSHOT_EXTENDED_TABLE		"CoWE"
-
-struct vdfs4_translation_record {
-	/* logical block  */
-	__le64 f_iblock;
-	/* phisical block */
-	__le64 m_iblock;
-};
 
 struct vdfs4_snapshot_descriptor {
 	/* signature */
@@ -322,47 +357,19 @@ struct vdfs4_extended_table {
 	__le32 pad;
 };
 
+struct vdfs4_meta_hashtable {
+	/* Signature */
+	__u8 signature[4];
+	__le32 pad;
+	/* Hash table size in bytes */
+	__le64 size;
+	__le64 hashtable_offsets[VDFS4_SF_NR];
+};
+
 /** END  -<< SNAPSHOT structuries  -----------------------------------------*/
 
-/**
- * @brief	The VDFS4 debug record, described one file system fail
- */
-#define DEBUG_FUNCTION_LINE_LENGTH 5
-#define DEBUG_FUNCTION_NAME_LENGTH 31
-
-struct vdfs4_debug_record {
-	/** volume uuid */
-	__le64 uuid;
-	/** line number */
-	__u8 line[DEBUG_FUNCTION_LINE_LENGTH];
-	/** Oops function name */
-	__u8 function[DEBUG_FUNCTION_NAME_LENGTH];
-	/** fail number */
-	__le32 fail_number;
-	/** error code */
-	__le32 error_code;
-	/** record timestamp in jiffies */
-	__le32 fail_time;
-	/** mount count */
-	__le32 mount_count;
-	/** sync count */
-	__le32 sync_count;
-};
-
-/**
- * @brief	The eMMCFS snapshot descriptor.
- */
-struct vdfs4_debug_descriptor {
-	/** Signature magic */
-	__u8 signature[4];
-	/* fail count */
-	__le32 record_count;
-	/** next_oops offset */
-	__le32 offset_to_next_record;
-};
-
 /* it is fixed constants, so we can use only digits here */
-#define IMAGE_CMD_LENGTH (512 - 4 - 4 - 4)
+#define IMAGE_CMD_LENGTH (512 - 4 - 4 - 16 - 16 - 12 - 4)
 
 struct vdfs4_volume_begins {
 	/** magic */
@@ -371,44 +378,50 @@ struct vdfs4_volume_begins {
 	__u8 layout_version[4];
 	/* image was created with command line */
 	__u8 command_line[IMAGE_CMD_LENGTH];
+	/* image creation time, YYYY.MM.DD-hh:mm(16byte) */
+	__u8 creation_time[16];
+	/* image creater username, (16byte) */
+	__u8 user_name[16];
+	/* reserved */
+	__u8 reserved[12];
 	/** Checksum */
 	__le32	checksum;
 };
 
 /**
- * @brief	The eMMCFS superblock.
+ * @brief	The eMMCFS superblock. (+0x200/+0x400)
  */
 struct vdfs4_super_block {
 	/** magic */
-	__u8	signature[4];		/* VDFS4 */
+/*000*/ __u8 signature[4];		/* VDFS4 */
 	/** vdfs4 layout version **/
 	__u8 layout_version[4];
 
 	/* maximum blocks count on volume */
-	__le64	maximum_blocks_count;
+	__le64 maximum_blocks_count;
 
 	/** Creation timestamp */
-	struct vdfs4_timespec creation_timestamp;
+/*010*/ struct vdfs4_timespec creation_timestamp;
 
 	/** 128-bit uuid for volume */
-	__u8	volume_uuid[16];
+	__u8 volume_uuid[16];
 
 	/** Volume name */
-	char	volume_name[16];
+/*02C*/ char volume_name[16];
 
-	/** File driver git repo branch name */
-	char mkfs_git_branch[64];
-	/** File driver git repo revision hash */
-	char mkfs_git_hash[40];
+	/** The mkfs tool version used to generate Volume */
+/*03C*/ char mkfs_version[64];
+	/** unused field */
+/*07C*/ char unused[40];
 
 	/** log2 (Block size in bytes) */
-	__u8	log_block_size;
+/*0A4*/ __u8 log_block_size;
 
 	/** Metadata bnode size and alignment */
-	__u8	log_super_page_size;
+	__u8 log_super_page_size;
 
 	/** Discard request granularity */
-	__u8	log_erase_block_size;
+	__u8 log_erase_block_size;
 
 	/** Case insensitive mode */
 	__u8 case_insensitive;
@@ -424,67 +437,88 @@ struct vdfs4_super_block {
 	/*hash calculation algorithm*/
 	__u8 hash_type;
 
-	/** Padding */
-	__u8	reserved[196];
+	/* AES encryption flags */
+	__u8 encryption_flags;
 
-	__le64 image_inode_count;
+	/* sb signature type */
+	__u8 sign_type;
+
+	/** Padding */
+/*0AE*/ __u8 reserved[54];
+
+/*0E4*/	__le32 exsb_checksum;
+
+/*0E8*/	__le32 basetable_checksum;
+
+/*0EC*/	__le32 meta_hashtable_checksum;
+
+/*0F0*/ __le64 image_inode_count;
 
 	__le32 pad;
 
 	/*RSA enctypted hash code of superblock*/
-	__u8 sb_hash[VDFS4_CRYPTED_HASH_LEN];
+/*0FC*/ __u8 sb_hash[VDFS4_MAX_CRYPTED_HASH_LEN];
 
 	/** Checksum */
-	__le32	checksum;
+/*1FC*/ __le32 checksum;
 };
 
 /**
- * @brief	The eMMCFS extended superblock.
+ * @brief	The eMMCFS extended superblock. (+0x600)
  */
 
 #define VDFS4_META_BTREE_EXTENTS		96
 
 struct vdfs4_extended_super_block {
 	/** File system files count */
-	__le64			files_count;
+/*000*/	__le64			files_count;
 	/** File system folder count */
 	__le64			folders_count;
 	/** Extent describing the volume */
-	struct vdfs4_extent	volume_body;
+/*010*/	struct vdfs4_extent	volume_body;
 	/** Number of mount operations */
-	__le32			mount_counter;
+/*020*/	__le32			mount_counter;
 	/* SYNC counter */
-	__le32			sync_counter;
+	__le32			sync_counter;		/* not used */
 	/** Number of umount operations */
 	__le32			umount_counter;
 	/** inode numbers generation */
 	__le32			generation;
 	/** Debug area position */
-	struct vdfs4_extent	debug_area;
+/*030*/	struct vdfs4_extent	debug_area;
 	/* btrees extents total block count */
-	__le32			meta_tbc;
+/*040*/	__le32			meta_tbc;
 	__le32			pad;
 	/** translation tables extents */
-	struct vdfs4_extent	tables;
+/*048*/	struct vdfs4_extent	tables;
 	/** btrees extents */
-	struct vdfs4_extent	meta[VDFS4_META_BTREE_EXTENTS];
+/*058*/	struct vdfs4_extent	meta[VDFS4_META_BTREE_EXTENTS];
 	/* translation tables extention */
-	struct vdfs4_extent	extension;
+/*658*/	struct vdfs4_extent	extension;		/* not used */
 
 	/* volume size in blocks, could be increased at first mounting */
-	__le64			volume_blocks_count;
+/*668*/	__le64			volume_blocks_count;
 
 	/** Flag indicating signed image */
-	__u8			crc;
+/*670*/	__u8			crc;
 
 	/** 128-bit uuid for volume */
-	__u8	volume_uuid[16];
+/*671*/	__u8			volume_uuid[16];
 
 	/** Reserved */
-	__u8			reserved[891];
+/*681*/	__u8			_reserved[7];
+
+	/** Write statistics */
+/*688*/	__le64			kbytes_written;
+
+	/** Meta HashTable extent */
+/*690*/	struct vdfs4_extent	meta_hashtable_area;
+
+	/** Reserved */
+/*6A0*/	__u8			reserved[860];
 
 	/** Extended superblock checksum */
-	__le32			checksum;
+/*9FC*/	__le32			checksum;
 };
 
 struct vdfs4_superblock {
@@ -494,6 +528,16 @@ struct vdfs4_superblock {
 	struct vdfs4_extended_super_block ext_superblock;
 };
 
+#define VDFS4_REFORMAT_HISTORY_ITEM_MAGIC "fmth"
+
+struct vdfs4_reformat_history {
+	u8 magic[4];
+	__le32 reformat_number;
+	__le32 mount_count;
+	__le32 sync_count;
+	char driver_version[4];
+	char mkfs_version[4];
+};
 
 struct vdfs4_layout_sb {
 	struct vdfs4_super_block  _sb1;
@@ -515,7 +559,7 @@ struct vdfs4_meta_block {
 #define VDFS4_CATALOG_FOLDER_RECORD		0x01
 #define VDFS4_CATALOG_FILE_RECORD		0x02
 #define VDFS4_CATALOG_HLINK_RECORD		0x03
-#define VDFS4_CATALOG_DLINK_RECORD		0x04
+/* UNUSED:								0x04 */
 #define VDFS4_CATALOG_ILINK_RECORD		0x05
 #define VDFS4_CATALOG_UNPACK_INODE		0x10
 
@@ -611,16 +655,6 @@ struct vdfs4_catalog_hlink_record {
 	__le16 file_mode;
 	__le16	pad1;
 	__le32	pad2;
-};
-
-/*
- * On-disk structure for data-link record in catalog btree.
- */
-struct vdfs4_catalog_dlink_record {
-	struct vdfs4_catalog_folder_record common;
-	__le64 data_inode;
-	__le64 data_offset;
-	__le64 data_length;
 };
 
 /** START  ->> EXTENTS OVERFLOW BTREE structuries  --------------------------*/

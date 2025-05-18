@@ -21,6 +21,7 @@
 #include <ctype.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 
 #include "vdfs_tools.h"
 
@@ -61,16 +62,44 @@ UNUSED static int is_pfm_file(char *buffer, int length)
 	return 0;
 }
 
-static int is_elf_file(char *buffer, int length)
+#define ARRAY_SIZE(x) (sizeof((x))/sizeof((x)[0]))
+typedef struct exec_file_format {
+	unsigned char *hdrname;
+	unsigned int hdrlen;
+} exec_file_format;
+
+#define MAX_HDRLEN	4	/* longest header len in exec file lists */
+exec_file_format format_list[] = {
+	{ (unsigned char *)"\x7f\x45\x4c\x46", 4 },
+	{ (unsigned char *)"\x4d\x5a", 2 }
+};
+
+int is_exec_file_path(const char *path)
 {
-	if (length < 4)
-		return 0;
+	int fd;
+	int ret = 0;
 
-	if (buffer[0] == 0x7f && buffer[1] == 'E' && buffer[2] == 'L' &&
-			buffer[3] == 'F')
-		return 1;
+	if (!path) {
+		log_error("path is NULL\n");
+		exit(EXIT_FAILURE);
+	}
 
-	return 0;
+	fd = open(path, O_RDONLY);
+	if (fd < 0) {
+		log_error("Failed to open for checking exec err(%d) path=%s",
+			  errno, path);
+		exit(EXIT_FAILURE);
+	}
+
+	ret = is_exec_file_fd(fd);
+	if (ret < 0) {
+		log_error("Failed to check path for exec file ret(%d) path=%s",
+			  ret, path);
+		exit(EXIT_FAILURE);
+	}
+
+	close(fd);
+	return ret;
 }
 
 UNUSED static int is_ascii_file(char *buffer, int length)
@@ -89,29 +118,82 @@ UNUSED static int is_ascii_file(char *buffer, int length)
 	return 1;
 }
 
-
-int is_need_sign(int src_fd)
+int is_exec_file_fd(int fd)
 {
-	char buffer[CHECK_BYTES_COUNT];
-	int ret, check_bytes_count;
+	unsigned char file_hdr[MAX_HDRLEN];
+	int ret = 0;
+	int matched = 0;
+	unsigned int i;
+	off_t orig_offset;
+	unsigned int readlen;
+	struct stat info;
 
-	memset(buffer, 0, CHECK_BYTES_COUNT);
-	ret = read(src_fd, buffer, CHECK_BYTES_COUNT);
-	if (ret == -1) {
-		ret = errno;
-		perror("cannot read data from a file");
-		return ret;
-	}
-	check_bytes_count = ret;
-	ret = lseek(src_fd, 0, SEEK_SET);
-	if (ret == -1) {
-		ret = errno;
-		perror("cannot set file position");
-		return ret;
+	if (fd <= 0) {
+		log_error("invalid fd(%d)\n", fd);
+		exit(EXIT_FAILURE);
 	}
 
-	if (is_elf_file(buffer, check_bytes_count))
+	orig_offset = lseek(fd, 0, SEEK_CUR);
+	if (orig_offset < 0) {
+		log_error("orig_offset is smaller than 0\n");
+		exit(EXIT_FAILURE);
+	}
+	if (lseek(fd, 0, SEEK_SET)) {
+		log_error("offset zero setting failure\n");
+		exit(EXIT_FAILURE);
+	}
+
+	/* getting file size */
+	ret = fstat(fd, &info);
+	if (ret) {
+		log_error("Failed to get stats for checking exec err(%d)",
+			  errno);
+		exit(EXIT_FAILURE);
+	}
+
+	/* decide readlen */
+	if (info.st_size > MAX_HDRLEN)
+		readlen = MAX_HDRLEN;
+	else
+		readlen = info.st_size;
+
+	/* read header */
+	ret = read(fd, file_hdr, readlen);
+	if (ret != readlen) {
+		log_error("Failed to read data for checking exec");
+		exit(EXIT_FAILURE);
+	}
+
+	/* ALL exec file type check */
+	for (i = 0; i < ARRAY_SIZE(format_list); i++) {
+		/* small file checking is skipped */
+		if (readlen < format_list[i].hdrlen)
+			continue;
+
+		/* matched found */
+		if (!memcmp(file_hdr, format_list[i].hdrname,
+					format_list[i].hdrlen)) {
+			matched = 1;
+			break;
+		}
+	}
+
+	lseek(fd, orig_offset, SEEK_SET);
+	return matched;
+}
+
+static int is_kernel_module(const char *filename)
+{
+	if (!strncmp(filename + strlen(filename)
+				- strlen(".ko"), ".ko", strlen(".ko")))
 		return 1;
-
 	return 0;
+}
+
+int is_need_sign(int src_fd, const char *src_filename)
+{
+	if (is_kernel_module(src_filename))
+		return 0;
+
+	return is_exec_file_fd(src_fd);
 }

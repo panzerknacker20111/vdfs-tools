@@ -125,6 +125,8 @@ static inline void kmem_cache_destroy(struct kmem_cache *cachep)
 	(type *)((char *)__mptr - offsetof(type, member)); })
 #define mutex_w_unlock(a) do {} while (0)
 #define mutex_w_lock(a) do {} while (0)
+#define mutex_r_unlock(a) do {} while (0)
+#define mutex_r_lock(a) do {} while (0)
 #define mutex_w_lock_nested(a, class) do {} while (0)
 #define unlikely(a) (a)
 extern int free_block;
@@ -141,6 +143,7 @@ typedef uint8_t u8;
 typedef uint16_t u16;
 typedef uint32_t u32;
 typedef uint64_t u64;
+typedef int64_t s64;
 
 typedef unsigned long pgoff_t;
 typedef	u_int64_t	atomic64_t;
@@ -213,7 +216,7 @@ extern const int VDFS4_BTREE_LEAF_NODE_MAGIC;	/* 0x00000002 */
 #define cpu_to_le16(a) htole16(a)
 #define le16_to_cpu(a) le16toh(a)
 #define VDFS4_GET_TABLE(table, x) (struct vdfs4_base_table_record *)(\
-		(void *)table + \
+		(char *)table + \
 		le32_to_cpu(table->translation_table_offsets[VDFS4_SF_INDEX(x)]))
 #define VDFS4_GET_LAST_IBLOCK(table, x) (le32_to_cpu( \
 		table->last_page_index[VDFS4_SF_INDEX(x)]))
@@ -224,6 +227,7 @@ struct fork_struct {
 struct inode {
 	void *data;
 	struct fork_struct fork;
+	unsigned long i_ino;
 };
 
 #define MAX_ERRNO	4095

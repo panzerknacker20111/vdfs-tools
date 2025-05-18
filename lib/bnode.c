@@ -22,6 +22,25 @@
 #include "vdfs_tools.h"
 #include "debug.h"
 
+void vdfs4_release_bnode_list(struct vdfs4_list *bnode_list)
+{
+	struct list_node *ptr = bnode_list->head_node.next;
+	for (;;)
+	{
+		if (!ptr)
+			break;
+
+		free(((struct vdfs4_bnode *)ptr->data)->data);
+		((struct vdfs4_bnode *)ptr->data)->data = NULL;
+		free(ptr->data);
+		ptr->data = NULL;
+		ptr->data_size = 0;
+		ptr = ptr->next;
+	}
+
+	vdfs4_list_free(bnode_list);
+}
+
 /**
  * @brief Allocating bnode from memory and read it from volume into memory
  * @param [in] btree - host tree
@@ -35,16 +54,35 @@ struct vdfs4_bnode *vdfs4_get_bnode_from_vol(struct vdfs4_btree *btree,
 	int ret = 0;
 	int magic_len = 3;
 	u_int64_t bnode_begining_pos;
-	__u32 nd_iblock;
+	u64 nd_iblock;
 	int tree_ino = 0;
-	struct vdfs4_bnode *bnode = malloc(sizeof(struct vdfs4_bnode));
-	if (!bnode)
-			goto exit_alloc;
-	__u8 *bnode_pos = malloc(btree->node_size_bytes);
-	if (!bnode_pos) {
-			free(bnode);
-			goto exit_alloc;
+
+	struct vdfs4_bnode *bnode;
+	__u8 *bnode_pos;
+
+	struct list_node *ptr = btree->bnode_list.head_node.next;
+	for (;;)
+	{
+		if (!ptr)
+			break;
+
+		if (((struct vdfs4_bnode *)ptr->data)->node_id == node_id)
+		{
+			bnode = (struct vdfs4_bnode *)ptr->data;
+			return bnode;
+		}
+		ptr = ptr->next;
 	}
+
+	bnode = malloc(sizeof(struct vdfs4_bnode));
+	if (!bnode)
+		goto exit_alloc;
+	bnode_pos = malloc(btree->node_size_bytes);
+	if (!bnode_pos) {
+		free(bnode);
+		goto exit_alloc;
+	}
+
 	const char *btree_type;
 	if (btree->btree_type == VDFS4_BTREE_EXTENTS) {
 		tree_ino = VDFS4_EXTENTS_TREE_INO;
@@ -78,10 +116,28 @@ struct vdfs4_bnode *vdfs4_get_bnode_from_vol(struct vdfs4_btree *btree,
 	bnode->node_id = node_id;
 	bnode->host = btree;
 
-	if (!memcmp(VDFS4_BNODE_DSCR(bnode)->magic, "eH", magic_len - 1) ||
+ 	if (!memcmp(VDFS4_BNODE_DSCR(bnode)->magic, "eH", magic_len - 1) ||
 		!memcmp(VDFS4_BNODE_DSCR(bnode)->magic, "Nd", magic_len - 1)) {
+		if ((table[node_id].sync_count != VDFS4_BNODE_DSCR(bnode)->version[0]) ||
+			(table[node_id].mount_count != VDFS4_BNODE_DSCR(bnode)->version[1]) ||
+			((node_id != 0) && (node_id != VDFS4_BNODE_DSCR(bnode)->node_id))) {
+			log_error("Corrupted bnode with node id %d in "
+				"%s,\n\t Base/ext table says node_id %d v%d.%d\n"
+				"\t In reality it is node_id %d v%d.%d\n",
+				node_id, btree_type, node_id,
+				table[node_id].mount_count,
+				table[node_id].sync_count,
+				VDFS4_BNODE_DSCR(bnode)->node_id,
+				VDFS4_BNODE_DSCR(bnode)->version[1],
+				VDFS4_BNODE_DSCR(bnode)->version[0]);
+			log_data(bnode->data, btree->node_size_bytes);
+			free(bnode_pos);
+			free(bnode);
+			return ERR_PTR(-ERDFAIL);
+		}
+		vdfs4_add_to_list(&btree->bnode_list, bnode, 1);
 		return bnode;
-	} else {
+ 	} else {
 		char *incorrect_magic = malloc(magic_len);
 		memcpy(incorrect_magic, VDFS4_BNODE_DSCR(bnode)->magic,
 				magic_len);
@@ -248,7 +304,6 @@ int vdfs4_destroy_bnode(struct vdfs4_bnode *bnode)
 void vdfs4_mark_bnode_dirty(struct vdfs4_bnode *bnode)
 {
 	assert(bnode->mode == VDFS4_BNODE_MODE_RW);
-	bnode->is_dirty = 1;
 }
 
 u_int32_t get_bnode_size(struct vdfs4_sb_info *sbi)

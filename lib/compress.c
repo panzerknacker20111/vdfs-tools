@@ -15,13 +15,16 @@
 /* Origina source and explanation is here:
  * http://www.zlib.net/zlib_how.html */
 
+#define _GNU_SOURCE
+
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 #include <zlib.h>
-#include <lzoconf.h>
-#include <lzo1x.h>
+#include <lzo/lzoconf.h>
+#include <lzo/lzo1x.h>
 #include <vdfs_tools.h>
 #include <compress.h>
 #include <openssl/md5.h>
@@ -39,9 +42,30 @@ char *compressor_names[VDFS4_COMPR_NR] = {
 	[VDFS4_COMPR_XZ] = "xz",
 	[VDFS4_COMPR_LZMA] = "lzma",
 	[VDFS4_COMPR_GZIP] = "gzip",
-	[VDFS4_COMPR_ZHW] = "zhw",
 	[VDFS4_COMPR_NONE] = NULL,
 };
+
+/* value of 0 means 1 byte alignment */
+size_t compr_align[VDFS4_COMPR_NR][ALIGN_NR] = {
+		[VDFS4_COMPR_UNDEF]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
+		[VDFS4_COMPR_ZLIB]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_LZO]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
+		[VDFS4_COMPR_XZ]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
+		[VDFS4_COMPR_LZMA]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
+		[VDFS4_COMPR_GZIP]	= {[ALIGN_START] = 64,	[ALIGN_LENGTH] = 64},
+		[VDFS4_COMPR_NONE]	= {[ALIGN_START] = 0,	[ALIGN_LENGTH] = 0},
+};
+
+static const uint16_t supported_compressed_layouts[] = {
+	/* current layout */
+	VDFS4_COMPR_LAYOUT_VER_06,
+	/* with RSA1024 hardcoded */
+	VDFS4_COMPR_LAYOUT_VER_05,
+};
+
+#define VDFS4_NUM_OF_SUPPORTED_COMPR_LAYOUTS \
+	(sizeof(supported_compressed_layouts)/sizeof(supported_compressed_layouts[0]))
+
 
 /* Compress from file source to file dest until EOF on source.
    def() returns Z_OK on success, Z_MEM_ERROR if memory could not be
@@ -61,6 +85,14 @@ enum compr_type get_compression_type(char *type_string)
 	return -1;
 }
 
+static void clear_tuned_flags(__le32 *flags)
+{
+	*flags &= ~((1<<VDFS4_COMPRESSED_FILE) |
+			(1<<VDFS4_AUTH_FILE) |
+			(1<<VDFS4_READ_ONLY_AUTH) |
+			(1<<VDFS4_ENCRYPTED_FILE) |
+			(1<<VDFS4_NOCOMPRESS_FILE));
+}
 
 int add_compression_info(int dst_fd, int chunks_num, int file_size,
 		const struct vdfs4_comp_extent *ext,
@@ -73,8 +105,7 @@ int add_compression_info(int dst_fd, int chunks_num, int file_size,
 	char *magic = NULL;
 	ssize_t written, aligned_size;
 	u_int32_t crc;
-	size_t h_size = (chunks_num + 1) * hash_len +
-				VDFS4_CRYPTED_HASH_LEN;
+	size_t h_size;
 	struct stat f_stat;
 	char buffer[VDFS4_BLOCK_SIZE];
 	memset(descr, 0x0, sizeof(*descr));
@@ -105,9 +136,6 @@ int add_compression_info(int dst_fd, int chunks_num, int file_size,
 	case VDFS4_COMPR_LZO:
 		magic = VDFS4_COMPR_LZO_FILE_DESCR_MAGIC;
 		break;
-	case VDFS4_COMPR_ZHW:
-		magic = VDFS4_COMPR_ZHW_FILE_DESCR_MAGIC;
-		break;
 	default:
 		log_error("Incorrect compress type %d", compress_type);
 		ret = -EINVAL;
@@ -126,9 +154,13 @@ int add_compression_info(int dst_fd, int chunks_num, int file_size,
 
 	memcpy(descr->magic + 1, magic, sizeof(descr->magic) - 1);
 	descr->extents_num = chunks_num;
-	descr->unpacked_size = file_size;
+	descr->unpacked_size = (__le64)file_size;
 	descr->layout_version = VDFS4_COMPR_LAYOUT_VER;
 	descr->log_chunk_size = log_chunk_size;
+	descr->sign_type = get_sign_type(rsa_key);
+
+	h_size = (size_t)(chunks_num + 1) * (size_t)hash_len +
+			(size_t)get_sign_length(rsa_key);
 
 	if (rsa_key) {
 		unsigned char *extended_hash_table = NULL;
@@ -144,7 +176,7 @@ int add_compression_info(int dst_fd, int chunks_num, int file_size,
 		assert(hash);
 
 		hash_alg((const unsigned char *)descr,
-			(char *)&descr->crc - (char *)descr,
+			VDFS4_COMPR_FILE_DESC_LEN,
 			*hash + hash_len * chunks_num);
 
 		ret = sign_rsa(*hash, hash_len *
@@ -192,50 +224,45 @@ exit:
 }
 #define LZO_OUT_LEN	()
 
-static int compress_chunk(unsigned char *in, unsigned char *out,
-		int chunk_size, int compress_type,
+static int compress_chunk(unsigned char *in, int ilen,
+		unsigned char *out, int olen, int compress_type,
 		struct vdfs4_comp_extent *c_ext, int *c_size,
-		int volume_chunk_size)
+		int volume_chunk_size, int min_space_saving_ratio)
 {
 	int ret = 0;
-#ifdef COMPRESS_RATIO
-	int have_compress_ratio = 0;
-	int compress_ratio = atoi(COMPRESS_RATIO);
+	int space_saving_ratio = 0;
+	int compressed_size = -1;
+	size_t align;
 
-	if (compress_ratio < 0 || compress_ratio > 100)
-		compress_ratio = 75;
-#endif
-	*c_size = chunk_size;
-	ret = compressor[compress_type](in, chunk_size, out, c_size);
-	if (ret)
+	ret = compressor[compress_type](in, ilen, out, olen, &compressed_size);
+	if(ret)
 		return ret;
-#ifdef COMPRESS_RATIO
-	have_compress_ratio = ((chunk_size - *c_size) * 100) / chunk_size;
-	if ((chunk_size == *c_size) ||
-		(have_compress_ratio > compress_ratio)) {
-		/* the chunk is uncompressed */
-#else
-		if (chunk_size <= *c_size) {
-#endif
-			c_ext->len_bytes = chunk_size;
-			/* Fill vdfs4 extent */
-			c_ext->flags |= VDFS4_CHUNK_FLAG_UNCOMPR;
-	} else {
-		c_ext->len_bytes = chunk_size - *c_size;
-		/* the chunk is compressed */
-		/* gzip chunks has to be aligned to 8 bytes for HW */
-		if ((compress_type == VDFS4_COMPR_GZIP) && (volume_chunk_size ==
-				(VDFS4_HW_COMPR_PAGE_PER_CHUNK << PAGE_SHIFT))) {
-			c_ext->len_bytes = ALIGN(c_ext->len_bytes, 8);
-			*c_size = chunk_size - c_ext->len_bytes;
-		} else if ((compress_type == VDFS4_COMPR_ZHW)&&
-				(volume_chunk_size ==
-				(VDFS4_HW_COMPR_PAGE_PER_CHUNK << PAGE_SHIFT))) {
-			c_ext->len_bytes = ALIGN(c_ext->len_bytes, 16);
-			*c_size = chunk_size - c_ext->len_bytes;
-		}
-	}
+	space_saving_ratio = 100 - ((compressed_size * 100) / ilen);
 
+	if(space_saving_ratio <= min_space_saving_ratio)
+		goto chunk_uncomp;
+	else
+		goto chunk_comp;
+
+chunk_uncomp:
+	memcpy(out, in, ilen);
+	c_ext->len_bytes = ilen;
+	c_ext->flags |= VDFS4_CHUNK_FLAG_UNCOMPR;
+	*c_size = 0;
+	return 0;
+chunk_comp:
+	align = compr_align[compress_type][ALIGN_LENGTH];
+	if(c_ext->flags & VDFS4_CHUNK_FLAG_ENCRYPTED)
+		encrypted_chunk_align(&align, ALIGN_LENGTH);
+
+	c_ext->len_bytes = compressed_size;
+	if(align)
+		c_ext->len_bytes = ALIGN(c_ext->len_bytes, align);
+
+	if(c_ext->len_bytes > (unsigned)volume_chunk_size)
+		goto chunk_uncomp;
+
+	*c_size = c_ext->len_bytes;
 	return 0;
 }
 
@@ -246,7 +273,12 @@ void compress_chunk_thread(void *arg)
 	struct thread_info *tinfo = (struct thread_info *)arg;
 	struct vdfs4_comp_extent *cur_ext = NULL;
 	int compressed_size;
-	int ret = 0, written;
+	int ret = 0, written = 0;
+	u64 aes_counter;
+	unsigned int enc_data_size;
+	unsigned char *encryption_buffer = NULL;
+	unsigned char *data;
+	int chunk_uncompressed;
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 	while (!tinfo->exit) {
@@ -276,43 +308,57 @@ void compress_chunk_thread(void *arg)
 		memcpy(cur_ext->magic, VDFS4_COMPR_EXT_MAGIC,
 				sizeof(cur_ext->magic));
 
-		if (tinfo->src_file_size < (VDFS4_BLOCK_SIZE << 1)) {
-			cur_ext->len_bytes = tinfo->in_size;
-			/* Fill vdfs4 extent */
-			cur_ext->flags |= VDFS4_CHUNK_FLAG_UNCOMPR;
-		} else {
-			ret = compress_chunk(tinfo->in, tinfo->out,
-					tinfo->in_size, tinfo->compress_type,
-					cur_ext, &compressed_size,
-					tinfo->chunk_size);
-			if (ret) {
-				ret = -errno;
+		if(tinfo->aes_info.do_encrypt) {
+			/* prepare encryption variables */
+			aes_counter = (tinfo->count - 1) * tinfo->chunk_size / AES_BLOCK_SIZE;
+			cur_ext->flags |= VDFS4_CHUNK_FLAG_ENCRYPTED;
+			encryption_buffer = malloc(tinfo->out_size);
+			if(!encryption_buffer) {
+				printf("No memory for encryption in compress_chunk_thread.\n");
+				ret = -ENOMEM;
 				goto err_exit;
 			}
 		}
-		if (cur_ext->flags & VDFS4_CHUNK_FLAG_UNCOMPR) {
+
+		ret = compress_chunk(tinfo->in, tinfo->in_size,
+				tinfo->out, tinfo->out_size,
+				tinfo->compress_type,
+				cur_ext, &compressed_size,
+				tinfo->max_chunk_size,
+				tinfo->min_space_saving_ratio);
+		if (ret) {
+			ret = -errno;
+			goto err_exit;
+		}
+
+		chunk_uncompressed = (int)(cur_ext->flags & VDFS4_CHUNK_FLAG_UNCOMPR);
+		data = chunk_uncompressed ? tinfo->in : tinfo->out;
+
+		if(tinfo->aes_info.do_encrypt) {
+			/* ENCRYPT CHUNK */
+			enc_data_size = chunk_uncompressed ?
+					tinfo->in_size : compressed_size;
+			encrypt_chunk(data, encryption_buffer,
+					tinfo->aes_info.aes_nonce,
+					&(tinfo->aes_info.aes_key),
+					enc_data_size, aes_counter);
+			data = encryption_buffer;
+		}
+
+		if (chunk_uncompressed) {
 			/*UNCOMPRESSED CHUNK*/
-			if (tinfo->compress_type == VDFS4_COMPR_GZIP &&
-				tinfo->chunk_size ==
-				(VDFS4_HW_COMPR_PAGE_PER_CHUNK
-						<< PAGE_SHIFT)
-						&& tinfo->in_size % 8 ) {
+			size_t align = compr_align[tinfo->compress_type][ALIGN_START];
+			if(tinfo->aes_info.do_encrypt)
+				encrypted_chunk_align(&align, ALIGN_START);
+
+			if(align && (tinfo->in_size % align)) {
 				memset(tinfo->in + tinfo->in_size, 0,
-						ALIGN(tinfo->in_size, 8) -
-						tinfo->in_size);
-				tinfo->in_size = ALIGN(tinfo->in_size, 8);
-			} else if (tinfo->compress_type == VDFS4_COMPR_ZHW &&
-				tinfo->chunk_size ==
-					(VDFS4_HW_COMPR_PAGE_PER_CHUNK
-						<< PAGE_SHIFT)
-					&& (tinfo->in_size % 16)) {
-				memset(tinfo->in + tinfo->in_size, 0, 16 -
-						(tinfo->in_size % 16));
-				tinfo->in_size = ALIGN(tinfo->in_size, 16);
+						align - tinfo->in_size % align);
+				tinfo->in_size = ALIGN(tinfo->in_size, align);
 			}
 			pthread_mutex_lock(&thread_file[tinfo->parent_thread].
 					write_uncompr_mutex);
-			written = write(tinfo->tmp_uncompr_fd, tinfo->in,
+			written = write(tinfo->tmp_uncompr_fd, data,
 					tinfo->in_size);
 			cur_ext->start = *tinfo->unpacked_offset;
 			*tinfo->unpacked_offset += written;
@@ -327,8 +373,7 @@ void compress_chunk_thread(void *arg)
 			/*COMPRESSED CHUNK*/
 			pthread_mutex_lock(&thread_file[tinfo->parent_thread].
 					write_compr_mutex);
-			compressed_size = tinfo->in_size - compressed_size;
-			written = write(tinfo->tmp_compr_fd, tinfo->out,
+			written = write(tinfo->tmp_compr_fd, data,
 					compressed_size);
 			cur_ext->start = *tinfo->packed_offset;
 			*tinfo->packed_offset += written;
@@ -338,21 +383,19 @@ void compress_chunk_thread(void *arg)
 				ret = (written == -1) ? -errno : -ENOSPC;
 				goto err_exit;
 			}
-
-
 		}
 
 		if (tinfo->hash_table) {
 			/*CALCULATE HASH FOR CHUNK*/
-			unsigned char *data = (cur_ext->flags &
-					VDFS4_CHUNK_FLAG_UNCOMPR) ? tinfo->in :
-							tinfo->out;
-			ssize_t data_size = cur_ext->len_bytes;
-			tinfo->hash_alg((const unsigned char *)data, data_size,
+			tinfo->hash_alg((const unsigned char *)data, cur_ext->len_bytes,
 					tinfo->hash_table
 					+ tinfo->hash_len * (tinfo->count - 1));
 		}
 err_exit:
+		if(encryption_buffer) {
+			free(encryption_buffer);
+			encryption_buffer = NULL;
+		}
 		pthread_mutex_lock(
 				&thread_file[tinfo->parent_thread].write_mutex);
 		if (ret)
@@ -404,7 +447,8 @@ int get_free_thread()
 static int prepare_file_descr(struct vdfs4_comp_file_descr *descr,
 		int compress_type, int chunks, int src_file_size,
 		int log_chunk_size, int hash,
-		vdfs4_hash_algorithm_func *hash_alg)
+		vdfs4_hash_algorithm_func *hash_alg,
+		unsigned char* aes_nonce, enum sign_type sign_type)
 {
 	char *magic;
 	int ret = 0;
@@ -418,9 +462,6 @@ static int prepare_file_descr(struct vdfs4_comp_file_descr *descr,
 		break;
 	case VDFS4_COMPR_LZO:
 		magic = VDFS4_COMPR_LZO_FILE_DESCR_MAGIC;
-		break;
-	case VDFS4_COMPR_ZHW:
-		magic = VDFS4_COMPR_ZHW_FILE_DESCR_MAGIC;
 		break;
 	default:
 		log_error("Incorrect compress type %d", compress_type);
@@ -439,14 +480,19 @@ static int prepare_file_descr(struct vdfs4_comp_file_descr *descr,
 
 	memcpy(descr->magic + 1, magic, sizeof(descr->magic) - 1);
 	descr->extents_num = chunks;
-	descr->unpacked_size = src_file_size;
+	descr->unpacked_size = (__le64)src_file_size;
 	descr->layout_version = VDFS4_COMPR_LAYOUT_VER;
 	descr->log_chunk_size = log_chunk_size;
+	descr->sign_type = sign_type;
+
+	if(aes_nonce)
+		memcpy(descr->aes_nonce, aes_nonce, VDFS4_AES_NONCE_SIZE);
 err_exit:
 	return ret;
 }
 
 /* the compress_file returns chunks count */
+/* TODO: add encryption support */
 static int compress_file_tune(int src_fd, int dst_fd,
 		int tmp_fd, int compress_type, struct vdfs4_comp_extent **ext,
 		unsigned char **hash, off_t *new_file_size, int log_chunk_size,
@@ -461,7 +507,8 @@ static int compress_file_tune(int src_fd, int dst_fd,
 	unsigned char *hash_table = NULL, *extended_hash_table = NULL;
 	int chunk_size = 1 << log_chunk_size;
 	unsigned char *in = malloc(chunk_size);
-	unsigned char *out = malloc(chunk_size + chunk_size / 16 + 64 + 3);
+	int olen = chunk_size + chunk_size / 16 + 64 + 3;
+	unsigned char *out = malloc(olen);
 
 	if (!in || !out) {
 		ret = ENOMEM;
@@ -505,10 +552,10 @@ static int compress_file_tune(int src_fd, int dst_fd,
 			/* Fill vdfs4 extent */
 			cur_ext->flags |= VDFS4_CHUNK_FLAG_UNCOMPR;
 		} else {
-
-			ret = compress_chunk(in, out, avail_in,
+			ret = compress_chunk(in, avail_in, out, olen,
 					compress_type, cur_ext,
-					&compressed_size, chunk_size);
+					&compressed_size, chunk_size,
+					DEFAULT_MIN_SPACE_SAVING_RATIO);
 			if (ret) {
 				errno = ret;
 				ret = -1;
@@ -517,16 +564,10 @@ static int compress_file_tune(int src_fd, int dst_fd,
 		}
 		if (cur_ext->flags & VDFS4_CHUNK_FLAG_UNCOMPR) {
 			/* chunk is uncompressed */
-			if (compress_type == VDFS4_COMPR_GZIP
-					&& ALIGN(avail_in, 8) != avail_in) {
-
-				memset(in + avail_in, 0, ALIGN(avail_in, 8)
-						- avail_in);
-				avail_in = ALIGN(avail_in, 8);
-			} else if (compress_type == VDFS4_COMPR_ZHW &&
-				(avail_in % 16)) {
-				memset(in + avail_in, 0, 16 - (avail_in % 16));
-				avail_in = ALIGN(avail_in, 16);
+			size_t align = compr_align[compress_type][ALIGN_LENGTH];
+			if(align && (avail_in % align)) {
+				memset(in + avail_in, 0, align - (avail_in % align));
+				avail_in = ALIGN(avail_in, align);
 			}
 			written = write(dst_fd, in, avail_in);
 			if (written != avail_in) {
@@ -538,7 +579,6 @@ static int compress_file_tune(int src_fd, int dst_fd,
 			unpacked_offset += written;
 		} else {
 			/* chunk is compressed */
-			compressed_size = avail_in - compressed_size;
 			written = write(tmp_fd, out, compressed_size);
 			if (written != compressed_size) {
 				errno = (written == -1) ? errno : ENOSPC;
@@ -597,8 +637,7 @@ static int compress_file_tune(int src_fd, int dst_fd,
 	return count;
 
 err_exit:
-	if (ext)
-		*ext = ext_table;
+	*ext = ext_table;
 	if (hash)
 		*hash = hash_table;
 	free(in);
@@ -635,13 +674,99 @@ void wait_file_finish(int *count, int parent_thread)
 	}
 }
 
+static int get_comp_extent_starting_at(struct vdfs4_comp_extent *table,
+		int count, size_t start_at)
+{
+	int ret = -1;
+	int i = 0;
+	if(!count)
+		return ret;
+	for(i=0;i<count; ++i) {
+		if(!(table[i].flags & VDFS4_CHUNK_FLAG_UNCOMPR) &&
+				table[i].start == start_at) {
+			return (int)(&table[i] - table);
+		}
+	}
+
+	return ret;
+}
+
+static int copy_from_fd_to_fd(int fd_src, off_t in_offset, int fd_dst, int len)
+{
+	unsigned char *buf = malloc(len);
+	int avail_in;
+	int ret = 0;
+	if(!buf)
+		return -ENOMEM;
+
+	avail_in = lseek(fd_src, in_offset, SEEK_SET);
+	if(avail_in == -1) {
+		ret = -errno;
+		goto exit;
+	}
+	avail_in = read(fd_src, buf, len);
+	if(avail_in != len) {
+		ret = -EINVAL;
+		goto exit;
+	}
+	avail_in = write(fd_dst, buf, len);
+	if(avail_in != len) {
+		ret = -EINVAL;
+		goto exit;
+	}
+exit:
+	free(buf);
+	return ret;
+}
+
+static int write_zero_area(int fd, int len)
+{
+	unsigned char *buf = malloc(len);
+	if(!buf)
+		return -ENOMEM;
+	memset(buf, 0, len);
+	if(write(fd, buf, len) != len) {
+		free(buf);
+		return -EINVAL;
+	}
+	free(buf);
+	return 0;
+}
+
+static int is_all_chunks_uncompressed(struct vdfs4_comp_extent *table,
+		int count)
+{
+	int i;
+	for (i = 0; i < count; i++) {
+		if (!(table[i].flags & VDFS4_CHUNK_FLAG_UNCOMPR))
+			break;
+		if(i == count - 1)
+			return 1;
+	}
+	return 0;
+}
+
+static int is_all_chunks_compressed(struct vdfs4_comp_extent *table,
+		int count)
+{
+	int i;
+	for (i = 0; i < count; i++) {
+		if (table[i].flags & VDFS4_CHUNK_FLAG_UNCOMPR)
+			break;
+		if(i == count - 1)
+			return 1;
+	}
+	return 0;
+}
+
 /* the compress_file returns chunks count */
 static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		int tmp_uncompr_fd, int dst_fd, int tmp_fd, int compress_type,
 		struct vdfs4_comp_extent **ext,
 		unsigned char **hash, off_t *new_file_size, int log_chunk_size,
 		off_t src_file_size, RSA *rsa_key, u_int64_t *block,
-		int parent_thread)
+		int parent_thread, 	struct vdfs4_aes_info *aes_info,
+		const struct profiled_file* pfile)
 {
 	int ret = 0;
 	size_t packed_offset = 0, unpacked_offset = 0;
@@ -649,18 +774,37 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 	int count = 0, ret_thread = 0;
 	struct vdfs4_comp_file_descr __descr, *descr = &__descr;
 	struct vdfs4_comp_extent *ext_table = NULL;
+	struct vdfs4_comp_extent *ext_table_copy = NULL;
 	struct vdfs4_comp_extent *extended_ext_table = NULL;
 	unsigned char *hash_table = NULL;
 	unsigned char *extended_hash_table = NULL;
 	int chunk_size = 1 << log_chunk_size;
 	unsigned char *in = malloc(chunk_size);
 	int hash_len = sbi->hash_len;
+	int chunks;
+	size_t cur_offset, cur_packed_offset = 0;
+	ssize_t align;
+	size_t volume_chunk_size = (size_t)1 << log_chunk_size;
+	int no_written_chunks = 0;
+
 	if (compress_type < 0 || compress_type >= VDFS4_COMPR_NR) {
 		ret = -1;
 		errno = EINVAL;
 		goto err_exit;
 	}
-	int chunks = ALIGN(src_file_size, chunk_size) / chunk_size;
+
+compress_retry:
+	packed_offset = 0;
+	unpacked_offset = 0;
+	*new_file_size = 0;
+	if((ret = lseek(tmp_fd, 0, SEEK_SET)) != 0)
+		goto err_exit;
+	if((ret = lseek(tmp_uncompr_fd, 0, SEEK_SET)) != 0)
+		goto err_exit;
+	if((ret = lseek(src_fd, 0, SEEK_SET)) != 0)
+		goto err_exit;
+
+	chunks = ALIGN(src_file_size, chunk_size) / chunk_size;
 	thread_file[parent_thread].chunks_count = chunks;
 	extended_ext_table = realloc(ext_table,
 			chunks * sizeof(struct vdfs4_comp_extent));
@@ -670,6 +814,7 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		goto err_exit;
 	}
 	ext_table = extended_ext_table;
+	memset(ext_table, 0, chunks * sizeof(struct vdfs4_comp_extent));
 	if (hash) {
 		extended_hash_table = realloc(hash_table, chunks *
 				hash_len);
@@ -679,6 +824,7 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 			goto err_exit;
 		}
 		hash_table = extended_hash_table;
+		memset(hash_table, 0, chunks * hash_len);
 	}
 	for (count = 1; count <= chunks; count++) {
 		avail_in = read(src_fd, in, chunk_size);
@@ -692,7 +838,11 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 				&thread_file[parent_thread].chunks_count;
 		thread[thread_num].src_fd = src_fd;
 		thread[thread_num].chunk_size = chunk_size;
+		thread[thread_num].max_chunk_size =
+				HW_DECOMPRESSOR_PAGES_NUM << PAGE_SHIFT;
 		thread[thread_num].compress_type = compress_type;
+		thread[thread_num].min_space_saving_ratio =
+				sbi->min_space_saving_ratio;
 		thread[thread_num].count = count;
 		thread[thread_num].tmp_uncompr_fd = tmp_uncompr_fd;
 		memcpy(thread[thread_num].in, in, chunk_size);
@@ -708,6 +858,7 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		thread[thread_num].packed_offset = &packed_offset;
 		thread[thread_num].src_file_size = src_file_size;
 		thread[thread_num].parent_thread = parent_thread;
+		thread[thread_num].aes_info = *aes_info;
 
 		ret = pthread_cond_signal(&thread[thread_num].compress_cond);
 		pthread_mutex_unlock(&thread[thread_num].compress_mutex);
@@ -728,14 +879,20 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 	}
 	count--;
 
-	/* update compressed chunks offsets */
-	for (ret = 0; ret < count; ret++) {
-		if (!(ext_table[ret].flags & VDFS4_CHUNK_FLAG_UNCOMPR))
-			ext_table[ret].start += unpacked_offset;
+	/* if none of chunks has been compressed
+	 * then file won't be tuned except:
+	 * - it is EXEC file  as those must retain auth feature
+	 * - encryption requested */
+	if(is_all_chunks_uncompressed(ext_table, count) &&
+			!is_exec_file_fd(src_fd) &&
+			!aes_info->do_encrypt) {
+		ret = -ENOTCOMPR;
+		goto err_exit;
 	}
 
 	ret = prepare_file_descr(descr, compress_type, chunks, src_file_size,
-			log_chunk_size, hash_table ? 1 : 0, sbi->hash_alg);
+			log_chunk_size, hash_table ? 1 : 0, sbi->hash_alg,
+			aes_info->aes_nonce, get_sign_type(rsa_key));
 	if (ret)
 		goto err_exit;
 
@@ -743,18 +900,19 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		unsigned char *extended_hash_table = NULL;
 
 		extended_hash_table = realloc(hash_table, (chunks + 1) *
-				hash_len + VDFS4_CRYPTED_HASH_LEN);
+				hash_len + get_sign_length(rsa_key));
 		if (extended_hash_table)
 			hash_table = extended_hash_table;
 		else {
 			ret = -ENOMEM;
 			goto err_exit;
 		}
-		*hash = hash_table;
+		if (hash)
+			*hash = hash_table;
 		/*Sign tuned file*/
 		assert(hash_table);
 		sbi->hash_alg((const unsigned char *)descr,
-			(char *)&descr->crc - (char *)descr,
+			VDFS4_COMPR_FILE_DESC_LEN,
 			hash_table + hash_len * chunks);
 
 		ret = sign_rsa(hash_table, hash_len *
@@ -767,12 +925,6 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		}
 	}
 
-
-
-	int aligned_size = ALIGN(*new_file_size,
-			sizeof(struct vdfs4_comp_extent)) - *new_file_size;
-	size_t h_size = (chunks + 1) * hash_len +
-				VDFS4_CRYPTED_HASH_LEN;
 	pthread_mutex_lock(&write_file_mutex);
 
 	if (!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE) &&
@@ -781,49 +933,94 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 		goto err_write_exit;
 	}
 
+	/* write uncompressed chunks */
+	no_written_chunks = 0;
 	int dst_offset = get_metadata_size(sbi);
 	lseek(dst_fd, dst_offset, SEEK_SET);
 	unpacked_offset = 0;
 	for (ret = 0; ret < count; ret++) {
 		if ((ext_table[ret].flags & VDFS4_CHUNK_FLAG_UNCOMPR)) {
-			int align = 0;
-			if (compress_type == VDFS4_COMPR_GZIP && chunk_size ==
-					(VDFS4_HW_COMPR_PAGE_PER_CHUNK
-							<< PAGE_SHIFT))
-				align = ALIGN(ext_table[ret].len_bytes, 8)
-				- ext_table[ret].len_bytes;
-			else if (compress_type == VDFS4_COMPR_ZHW && chunk_size ==
-					(VDFS4_HW_COMPR_PAGE_PER_CHUNK
-							<< PAGE_SHIFT))
-				align =  ALIGN(ext_table[ret].len_bytes, 16)
-				- ext_table[ret].len_bytes;
+			size_t aligned_len = ext_table[ret].len_bytes;
+			size_t align = compr_align[compress_type][ALIGN_START];
+			if(ext_table[ret].flags & VDFS4_CHUNK_FLAG_ENCRYPTED)
+				encrypted_chunk_align(&align, ALIGN_START);
+			if(align)
+				aligned_len = ALIGN(ext_table[ret].len_bytes, align);
 
 			lseek(tmp_uncompr_fd, ext_table[ret].start, SEEK_SET);
-			avail_in = read(tmp_uncompr_fd, in,
-					ext_table[ret].len_bytes + align);
-			if (avail_in != (ssize_t)(ext_table[ret].len_bytes
-					+ align)) {
+			avail_in = read(tmp_uncompr_fd, in, aligned_len);
+			if (avail_in != (ssize_t)aligned_len) {
 				ret = -1;
 				goto err_write_exit;
 			}
 			ext_table[ret].start = unpacked_offset;
 
-			unpacked_offset += ext_table[ret].len_bytes + align;
+			unpacked_offset += aligned_len;
 			write(dst_fd, in, avail_in);
+			no_written_chunks++;
+
+			if (pfile)
+				ext_table[ret].profiled_prio = pfile->chunk_order[ret];
 		}
+
 	}
+
+	/* write compressed chunks */
+	cur_packed_offset = 0;
+	struct vdfs4_comp_extent *temp_ptr = realloc(ext_table_copy, chunks * sizeof(struct vdfs4_comp_extent));
+	if (!temp_ptr)
+	{
+		log_error("not enough memory");
+		ret = -ENOMEM;
+		goto err_exit;
+	}
+	ext_table_copy = temp_ptr;
+
+	memcpy(ext_table_copy, ext_table,
+			chunks * sizeof(struct vdfs4_comp_extent));
+	cur_offset = unpacked_offset;
+	while(no_written_chunks < chunks) {
+		int index = get_comp_extent_starting_at(ext_table_copy, chunks,
+				cur_packed_offset);
+		assert(index >= 0);
+		struct vdfs4_comp_extent* ext = &ext_table[index];
+
+		align = (ext->len_bytes + (cur_offset % sbi->block_size)) - volume_chunk_size;
+		if(align > 0) {
+			align = sbi->block_size - align;
+			ret = write_zero_area(dst_fd, align);
+			if(ret)
+				 goto err_write_exit;
+			cur_offset += align;
+			*new_file_size += align;
+		}
+
+		ret = copy_from_fd_to_fd(tmp_fd, cur_packed_offset, dst_fd, ext->len_bytes);
+		if(ret)
+			goto err_write_exit;
+
+		ext->start = cur_offset;
+		cur_offset += ext->len_bytes;
+		cur_packed_offset += ext->len_bytes;
+		no_written_chunks++;
+
+		if (pfile)
+			ext->profiled_prio = pfile->chunk_order[index];
+	}
+	assert(no_written_chunks == chunks);
+
 	__u32 crc = crc32_body(0, (const __u8 *)ext_table,
 			chunks * sizeof(*ext_table));
 	if (hash_table)
 		crc = crc32_body(crc, hash_table, (chunks + 1) * hash_len +
-				VDFS4_CRYPTED_HASH_LEN);
+				get_sign_length(rsa_key));
 	descr->crc = crc32_body(crc, (const __u8 *)descr, sizeof(*descr));
-	ret = lseek(tmp_fd, 0, SEEK_SET);
-	if (ret == -1)
-		goto err_write_exit;
 
-	while ((avail_in = read(tmp_fd, in, chunk_size)) > 0)
-		write(dst_fd, in, avail_in);
+	/* align whole file size */
+	int aligned_size = ALIGN(*new_file_size,
+			sizeof(struct vdfs4_comp_extent)) - *new_file_size;
+	size_t h_size = (size_t)(chunks + 1) * (size_t)hash_len +
+			(size_t)get_sign_length(rsa_key);
 
 	/* write chunk table */
 	struct stat f_stat;
@@ -865,9 +1062,8 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 				sbi->disk_op_image.file_id,
 				dst_offset, *new_file_size);
 		if (begin) {
-			*block = ALIGN(begin, sbi->block_size) / sbi->block_size;;
+			*block = ALIGN(begin, sbi->block_size) / sbi->block_size;
 			ftruncate(sbi->disk_op_image.file_id, dst_offset);
-			ret = 0;
 			goto exit;
 		}
 	}
@@ -876,7 +1072,7 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 			sbi->block_size) / sbi->block_size);
 	ret = allocate_space(sbi,  begin, count_blocks, block);
 	if (ret) {
-		log_error("Can't allocate space - %s", strerror(-ret));
+		log_error("Can't allocate space(ret:%d)", ret);
 		goto err_write_exit;
 	}
 
@@ -887,6 +1083,8 @@ static int compress_file(struct vdfs4_sb_info *sbi, int src_fd,
 exit:
 	pthread_mutex_unlock(&write_file_mutex);
 	free(in);
+	if(ext_table_copy)
+		free(ext_table_copy);
 	return count;
 err_write_exit:
 	pthread_mutex_unlock(&write_file_mutex);
@@ -896,6 +1094,8 @@ err_exit:
 	if (hash)
 		*hash = hash_table;
 	free(in);
+	if(ext_table_copy)
+		free(ext_table_copy);
 	return ret;
 }
 
@@ -914,10 +1114,12 @@ static inline int is_magic_set(struct vdfs4_comp_file_descr *descr,
 int analyse_existing_file(int rd_fd,
 		int *compress_type, int *chunks_num, off_t *src_file_size,
 		off_t *data_area_size, struct vdfs4_comp_extent **extents,
-		int *is_authenticated, int *log_chunk_size)
+		int *is_authenticated, int *log_chunk_size,
+		struct vdfs4_comp_file_descr* descr_ret)
 {
 	struct vdfs4_comp_file_descr descr;
-	int ret = 0;
+	int ret = 0, supported = 0;
+	unsigned i;
 	off_t file_size;
 
 	ret = get_file_size(rd_fd, &file_size);
@@ -948,7 +1150,17 @@ int analyse_existing_file(int rd_fd,
 			*chunks_num = 0;
 			*extents = NULL;
 		}
-		if (descr.layout_version != VDFS4_COMPR_LAYOUT_VER) {
+		if(descr_ret)
+			memcpy(descr_ret, &descr, sizeof(*descr_ret));
+
+		for (i = 0; i < VDFS4_NUM_OF_SUPPORTED_COMPR_LAYOUTS; i++) {
+			if (le16_to_cpu(descr.layout_version) ==
+						supported_compressed_layouts[i]) {
+				supported = 1;
+				break;
+			}
+		}
+		if (!supported) {
 			log_error("Wrong VDFS4 COMPRESSED FILE LAYOUT VERSION -"
 					" %d, current version - %d",
 					descr.layout_version,
@@ -960,46 +1172,58 @@ int analyse_existing_file(int rd_fd,
 }
 
 int check_file_before_compress(const char *filename, int need_compress,
-		mode_t *src_mode)
+		mode_t *src_mode, int min_comp_size)
 {
 	int ret = 0;
 	struct stat stat_info;
+	int min_size = min_comp_size == -1 ?
+			MIN_COMPRESSED_FILE_SIZE : min_comp_size;
 	memset(&stat_info, 0, sizeof(struct stat));
-	ret = stat(filename, &stat_info);
+	ret = lstat(filename, &stat_info);
 	if (ret < 0) {
 		int err = errno;
-		log_error("Can't get stat info of %s because of %s",
-				filename, strerror(err));
+		log_error("Can't get stat info of %s because of err(%d)",
+			  filename, errno);
 		return err;
 	}
 	*src_mode = stat_info.st_mode;
 	if (!S_ISREG(*src_mode)) {
-		log_error("Source file %s is not regular file", filename);
-		return -EINVAL;
+		log_info("Source file %s is not regular file"
+				" and cannot be compressed", filename);
+		return -ENOTCOMPR;
 	}
-	if (need_compress && stat_info.st_size < MIN_COMPRESSED_FILE_SIZE)
+	if (need_compress && stat_info.st_size < min_size &&
+			!is_exec_file_path(filename))
 		return -ENOTCOMPR;
 	return ret;
 }
 
+struct profiled_file* find_prof_data_path(struct list_head *prof_data,
+					  char* path)
+{
+	struct profiled_file* pfile;
+	list_for_each_entry(pfile, prof_data, list) {
+		if (strcmp(path, pfile->path))
+			continue;
+		return pfile;
+	}
+	return NULL;
+}
+
+#define COMPRTEMP "comprXXXXXX"
 
 int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 		int need_compress, int compress_type, off_t *rsl_filesize,
-		RSA *rsa_key, int sign_dlink, int log_chunk_size,
+		RSA *rsa_key, int log_chunk_size,
 		const char *tmp_dir, u_int64_t *block, int thread_num,
-		vdfs4_hash_algorithm_func *hash_alg, int hash_len)
+		vdfs4_hash_algorithm_func *hash_alg, int hash_len,
+		int do_encrypt, const struct profiled_file* pfile)
 {
 	int src_fd;
 	int tmp_dst_fd = -1, tmp_uncompr_fd = -1;
 
 	char *compr_name = NULL;
 	char *uncompr_name = NULL;
-	if (thread_num >= 0) {
-		compr_name =thread_file[thread_num].compr_temp;
-		uncompr_name = thread_file[thread_num].uncompr_temp;
-	} else {
-		compr_name =tempnam(tmp_dir, "comprXXXXXX");
-	}
 
 	off_t src_file_size;
 	int ret;
@@ -1017,15 +1241,15 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 	int chunks_num = 0, infile_compression;
 	off_t data_area_size;
 	int _log_chunk_size = 0;
-
+	struct vdfs4_aes_info aes_info;
 
 	*rsl_filesize = 0;
 
 	src_fd = open(src_filename, O_RDONLY);
 	if (src_fd == -1) {
 		ret = errno;
-		log_error("error %s while opening file %s for read",
-				strerror(errno), src_filename);
+		log_error("error(%d) while opening file %s for read",
+			  errno, src_filename);
 		goto rel_src_fd;
 	}
 	ret = get_file_size(src_fd, &src_file_size);
@@ -1035,7 +1259,7 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 	/* check: is file encoded? */
 	ret = analyse_existing_file(src_fd, &infile_compression,
 			&chunks_num, &src_file_size, &data_area_size, &extents,
-			&is_authenticated, &_log_chunk_size);
+			&is_authenticated, &_log_chunk_size, NULL);
 	if (ret) {
 		log_error("cannot analyse the input file");
 		goto rel_src_fd;
@@ -1047,34 +1271,69 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 		ret = -EINVAL;
 		goto rel_extents;
 	}
-	if (sbi && IS_FLAG_SET(sbi->service_flags, SIGN_ALL)) {
-		__rsa_key = rsa_key;
+
+	/* check if file must be signed (auth feature) */
+	__rsa_key = (is_need_sign(src_fd, src_filename) > 0) ?
+				rsa_key : NULL;
+	if (sbi && IS_FLAG_SET(sbi->service_flags, SIGN_ALL))
+			__rsa_key = rsa_key;
+
+	if (thread_num >= 0) {
+		compr_name =thread_file[thread_num].compr_temp;
+		uncompr_name = thread_file[thread_num].uncompr_temp;
+		tmp_dst_fd = open(compr_name, O_RDWR | O_CREAT | O_TRUNC,
+				  S_IRUSR | S_IWUSR);
 	} else {
-		if (!sign_dlink)
-			__rsa_key = (is_need_sign(src_fd) > 0) ?
-					rsa_key : NULL;
-		else if (!(IS_FLAG_SET(sign_dlink, VDFS4_AUTH_FILE)))
-			__rsa_key = NULL;
+		size_t len = strlen(tmp_dir) + strlen(COMPRTEMP) + 2;
+		compr_name = (char *)malloc(len);
+		if (!compr_name)
+		{
+			log_error("not enough memory");
+			goto rel_extents;
+		}
+		memset(compr_name, 0x00, len);
+		if (strlen(tmp_dir) > 0)
+		{
+			strncpy(compr_name, tmp_dir, strlen(tmp_dir));
+			if (compr_name[strlen(compr_name) - 1] != '/')
+			{
+				strncat(compr_name, "/", 1);
+			}
+		}
+		strncat(compr_name, COMPRTEMP, strlen(COMPRTEMP));
+		tmp_dst_fd = mkostemp(compr_name, O_RDWR | O_CREAT | O_TRUNC);
 	}
-	tmp_dst_fd = open(compr_name, O_RDWR | O_CREAT | O_TRUNC);
+
 	if (tmp_dst_fd == -1) {
 		ret = errno;
-		log_error("%s temporary file %s", strerror(ret),
-				compr_name);
+		log_error("err(%d) temporary file %s", errno, compr_name);
 		goto rel_src_fd;
 	}
 	unlink(compr_name);
 	if (thread_num >= 0) {
-		tmp_uncompr_fd = open(uncompr_name, O_RDWR | O_CREAT | O_TRUNC);
+		tmp_uncompr_fd = open(uncompr_name, O_RDWR | O_CREAT | O_TRUNC,
+				      S_IRUSR | S_IWUSR);
 		if (tmp_uncompr_fd == -1) {
 			ret = errno;
-			log_error("%s temporary file %s", strerror(ret),
-					uncompr_name);
+			log_error("err(%d) temporary file %s",
+				  errno, uncompr_name);
 			close(tmp_dst_fd);
 			goto rel_src_fd;
 		}
 		unlink(uncompr_name);
 	}
+
+	memset(&aes_info, 0, sizeof(struct vdfs4_aes_info));
+	if(do_encrypt) {
+		memcpy(&aes_info.aes_key, sbi->aes_key,
+		       sizeof(aes_info.aes_key));
+		if(!RAND_status())
+			log_error("Warning: PRNG is not seeded correctly!");
+		RAND_bytes(aes_info.aes_nonce, VDFS4_AES_NONCE_SIZE);
+		aes_info.do_encrypt = 1;
+		need_compress = 1;
+	}
+
 	if (need_compress) {
 		infile_compression = compress_type;
 		if (thread_num >= 0)
@@ -1083,7 +1342,8 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 					&extents, (__rsa_key) ?
 					&hash_table : NULL,  rsl_filesize,
 					log_chunk_size, src_file_size,
-					__rsa_key, block, thread_num);
+					__rsa_key, block, thread_num,
+					&aes_info, pfile);
 		else
 			chunks_num = compress_file_tune(src_fd, dst_fd,
 					tmp_dst_fd, compress_type, &extents,
@@ -1092,13 +1352,11 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 					src_file_size, hash_alg, hash_len);
 		if (chunks_num < 0) {
 			ret = chunks_num;
-			if (ret == -ENOTCOMPR) {
-				compress_type = VDFS4_COMPR_NONE;
+			if (ret == -ENOTCOMPR)
 				/* For Gzip compression */
 				*rsl_filesize =  src_file_size;
-			} else {
+			else
 				goto rel_extents;
-			}
 		}
 	}
 
@@ -1125,34 +1383,29 @@ rel_src_fd:
 }
 
 static int __compress_zlib_gzip_chunk(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen, int is_gzip)
+		unsigned char *obuff, int olen, int *comp_size, int window_bits)
 {
 	int ret = 0;
-
-	/* GZIP parameters for hw2 decompressor */
-	int window_size = is_gzip ? 12+16 : 15;
-	int level = is_gzip ? Z_DEFAULT_COMPRESSION : Z_BEST_COMPRESSION;
 
 	z_stream strm;
 	strm.zalloc = Z_NULL;
 	strm.zfree = Z_NULL;
 	strm.opaque = Z_NULL;
-	ret = deflateInit2(&strm, level, Z_DEFLATED, window_size,
+	ret = deflateInit2(&strm, Z_BEST_COMPRESSION, Z_DEFLATED, window_bits,
 			8, Z_DEFAULT_STRATEGY);
 	if (ret != Z_OK)
 		return ret;
 	strm.avail_in = ilen;
 	strm.next_in = ibuff;
-	strm.avail_out = *olen;
+	strm.avail_out = olen;
 	strm.next_out = obuff;
 	ret = deflate(&strm, Z_FINISH);
-	if (ret == Z_OK || strm.avail_out >= (unsigned int) ilen) {
+	if (ret == Z_OK || !strm.avail_out) {
 		/* Incompressible chunk */
-		*olen = ilen;
-		memcpy(obuff, ibuff, ilen);
+		*comp_size = 0;
 	} else {
 		assert(ret == Z_STREAM_END);
-		*olen = strm.avail_out;
+		*comp_size = strm.total_out;
 	}
 
 	(void)deflateEnd(&strm);
@@ -1162,22 +1415,24 @@ static int __compress_zlib_gzip_chunk(unsigned char *ibuff, int ilen,
 }
 
 int compress_zlib_chunk(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen)
+		unsigned char *obuff, int olen, int *comp_size)
 {
-	return __compress_zlib_gzip_chunk(ibuff, ilen, obuff, olen, 0);
+	return __compress_zlib_gzip_chunk(ibuff, ilen, obuff, olen, comp_size,
+			ZLIB_WINDOW_SIZE);
 }
 
 int compress_gzip_chunk(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen)
+		unsigned char *obuff, int olen, int *comp_size)
 {
-	return __compress_zlib_gzip_chunk(ibuff, ilen, obuff, olen, 1);
+	return __compress_zlib_gzip_chunk(ibuff, ilen, obuff, olen, comp_size,
+			GZIP_WINDOW_SIZE);
 }
 
 int compress_lzo_chunk(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen)
+		unsigned char *obuff, int olen, int *comp_size)
 {
 	int ret = 0;
-	int new_olen = *olen;
+	int new_olen = olen;
 	lzo_voidp wrkmem[LZO1X_999_MEM_COMPRESS];
 	ret = lzo_init();
 	if (ret != LZO_E_OK) {
@@ -1190,23 +1445,23 @@ int compress_lzo_chunk(unsigned char *ibuff, int ilen,
 		log_error("%d: lzo compress error\n", ret);
 		goto exit;
 	}
-	if (new_olen >= ilen) {
-		*olen = ilen;
-		memcpy(obuff, ibuff, ilen);
+	if (new_olen >= olen) {
+		*comp_size = 0;
 	} else
-		*olen -= new_olen;
+		*comp_size = new_olen;
 exit:
 	return ret;
 }
 
 int not_supported_compressor(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen)
+		unsigned char *obuff, int olen, int *comp_size)
 {
 	/* Silent gcc warnings */
 	(void) ibuff;
 	(void) ilen;
 	(void) obuff;
 	(void) olen;
+	(void) comp_size;
 
 	log_error("Compressor is not supported");
 	return -ENOTSUP;
@@ -1239,13 +1494,12 @@ void zerr(int ret)
 
 /* Should correspond to enum compr_type*/
 int (*compressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
-		unsigned char *obuff, int *olen) = {
+		unsigned char *obuff, int olen, int *comp_size) = {
 	[VDFS4_COMPR_ZLIB]	= compress_zlib_chunk,
 	[VDFS4_COMPR_LZO]	= compress_lzo_chunk,
 	[VDFS4_COMPR_XZ]		= not_supported_compressor,
 	[VDFS4_COMPR_LZMA]	= not_supported_compressor,
 	[VDFS4_COMPR_GZIP]	= compress_gzip_chunk,
-	[VDFS4_COMPR_ZHW]	= compress_zlib_chunk,
 };
 
 int parse_list_cmd(struct install_task *sqt, char *cmd_str)
@@ -1264,33 +1518,18 @@ int parse_list_cmd(struct install_task *sqt, char *cmd_str)
 			if (type[strlen("COMPRESS")] == '=')
 				strsep(&type, "=");
 			if (type)
-				sqt->compress_type = get_compression_type(type);
+				sqt->compress_type =
+					get_compression_type(type);
 			if (sqt->compress_type < 0 || !type) {
 				ret = -EINVAL;
 				goto exit;
 			}
-		} else if (!strncmp(cmd, "DLINK", strlen("DLINK"))) {
-			if ((sqt->cmd & CMD_COMPRESS) ||
-					(sqt->cmd & CMD_DLINK)) {
-				log_error("Duplicate command: COMPRESS");
-				return -EINVAL;
-			}
-			sqt->cmd |= CMD_COMPRESS | CMD_DLINK;
-			type = cmd;
-			if (type[strlen("DLINK")] == '=')
-				strsep(&type, "=");
-			if (type)
-				sqt->compress_type = get_compression_type(type);
-			if (sqt->compress_type < 0 || !type) {
-				ret = -EINVAL;
-				goto exit;
-			}
+		} else if(!strncmp(cmd, "NOCOMPRESS", strlen("NOCOMPRESS"))) {
+			sqt->cmd |= CMD_DECOMPRESS;
 		} else {
 			ret = -ENOTCMD;
 			return ret;
 		}
-
-
 		if (next_cmd)
 			cmd = ++next_cmd;
 		else
@@ -1331,151 +1570,109 @@ int get_wsp_separated_payload(char **src, char *whitespace, char *payload)
  * @return 0 on success, error code otherwise
  */
 int preprocess_sq_tasklist(struct vdfs4_sb_info *sbi,
-		struct list_head *install_task_list)
+		struct list_head *list, FILE *list_file)
 {
-	struct install_task *sqt;
+	struct install_task *sqt = NULL;
 	int ret = 0;
 	char cmd[VDFS4_FULL_PATH_LEN];
+	memset(cmd, 0, VDFS4_FULL_PATH_LEN);
+
 	if (strlen(sbi->root_path) > VDFS4_FULL_PATH_LEN) {
 		log_error("Can't work with files list because of length of root"
 				" path is more than %d", VDFS4_FULL_PATH_LEN);
 		return -EINVAL;
 	}
+	if (list_file) { // In "-q config_file"  param case
+		for (;;) {
+			char wsp[VDFS4_FULL_PATH_LEN],payl[VDFS4_FULL_PATH_LEN];
+			char *cur = cmd;
+			char *dst;
+			int i;
 
-	for (;;) {
-		char wsp[VDFS4_FULL_PATH_LEN], payl[VDFS4_FULL_PATH_LEN];
-		char *cur = cmd;
-		char *dst;
-		int i;
+			if (!fgets(cmd, VDFS4_FULL_PATH_LEN - 1,
+					list_file))
+				break;
+			/* skip comments lines */
+			if(cmd[0] == '#')
+				continue;
 
-		if (!fgets(cmd, VDFS4_FULL_PATH_LEN - 1,
-				sbi->squash_list_file))
-			break;
-
-		get_wsp_separated_payload(&cur, NULL, payl);
-		if (strlen(payl) == 0)
-			continue;
-
-		sqt = malloc(sizeof(struct install_task));
-				if (!sqt) {
-					log_error("not enough memory");
-					return -ENOMEM;
-				}
-
-		memset(sqt, 0, sizeof(*sqt));
-		strncpy(sqt->src_full_path, sbi->root_path,
-				VDFS4_FULL_PATH_LEN);
-		sqt->compress_type = VDFS4_COMPR_NONE;
-
-
-
-		ret = parse_list_cmd(sqt, payl);
-		if (ret) {
-			goto err;
-		} else {
 			get_wsp_separated_payload(&cur, NULL, payl);
-			strncat(sqt->src_full_path, payl, VDFS4_FULL_PATH_LEN);
-		}
-		if ((sqt->cmd & CMD_DLINK) &&
-			!IS_FLAG_SET(sbi->service_flags, READ_ONLY_IMAGE)) {
-			log_error("Can use DLINK command only for read-only "
-					"images (without -z option)");
-			ret = -EINVAL;
-			goto err;
-		}
-		dst = sqt->src_full_path;
-		while (get_wsp_separated_payload(&cur, wsp, payl)) {
-			if (payl[0] == '/')
-				dst = sqt->dst_parent_dir;
-			else
-				strncat(dst, wsp, VDFS4_FULL_PATH_LEN);
+			if (strlen(payl) == 0)
+				continue;
 
-			strncat(dst, payl, VDFS4_FULL_PATH_LEN);
-		}
-
-		if ((sqt->cmd & CMD_COMPRESS) && !sbi->dl_inf.compression_type)
-			sbi->dl_inf.compression_type = sqt->compress_type;
-
-		if (sqt->src_full_path[strlen(sbi->root_path)] != '/') {
-			log_error("Incorrect source path - %s. Must be"
-				" - /%s",
-				&sqt->src_full_path[strlen(sbi->root_path)],
-				&sqt->src_full_path[strlen(sbi->root_path)]);
-			ret = -EINVAL;
-			goto err;
-		}
-
-		for (i = strlen(sqt->src_full_path) - 1; i >= 0; i--)
-			if (sqt->src_full_path[i] == '/') {
-				sqt->src_fname = &sqt->src_full_path[++i];
-					break;
-			}
-		if (sqt->cmd & CMD_DLINK) {
-			if (!sbi->rsa_key) {
-				log_error("Wrong config file:"
-					"Command DLINK can be used only "
-					"with authentication options"
-					"(-H rsa key)");
-				ret = -EINVAL;
-				goto err;
-			}
-			struct install_task *sqt_dlink = malloc(sizeof(
-					struct install_task));
-			if (!sqt_dlink) {
+			sqt = malloc(sizeof(struct install_task));
+			if (!sqt) {
 				log_error("not enough memory");
 				return -ENOMEM;
 			}
-			memcpy(sqt_dlink, sqt, sizeof(struct install_task));
-			list_add(&sqt_dlink->list, &sbi->compress_list);
+
+			memset(sqt, 0, sizeof(*sqt));
+			strncpy(sqt->src_full_path, sbi->root_path,
+					VDFS4_FULL_PATH_LEN);
+			sqt->compress_type = VDFS4_COMPR_NONE;
+
+			ret = parse_list_cmd(sqt, payl);
+			if (ret)
+				goto err;
+
+			get_wsp_separated_payload(&cur, NULL, payl);
+			if (strlen(sqt->src_full_path) + strlen(payl) + 2 >
+						VDFS4_FULL_PATH_LEN) {
+				log_error("Full path to file is too long - %s/%s."
+						"Should be not more than %d",
+						sqt->src_full_path, payl,
+						VDFS4_FULL_PATH_LEN);
+				ret = -ENAMETOOLONG;
+				goto err;
+			}
+			strncat(sqt->src_full_path, payl, VDFS4_FULL_PATH_LEN);
+
+			dst = sqt->src_full_path;
+			while (get_wsp_separated_payload(&cur, wsp, payl)) {
+				if (payl[0] == '/')
+					dst = sqt->dst_parent_dir;
+				else
+					strncat(dst, wsp, VDFS4_FULL_PATH_LEN);
+
+				strncat(dst, payl, VDFS4_FULL_PATH_LEN);
+			}
+
+			if (sqt->src_full_path[strlen(sbi->root_path)] != '/') {
+				log_error("Incorrect source path - %s. Must be"
+					" - /%s",
+					&sqt->src_full_path[strlen(sbi->root_path)],
+					&sqt->src_full_path[strlen(sbi->root_path)]);
+				ret = -EINVAL;
+				goto err;
+			}
+
+			for (i = strlen(sqt->src_full_path) - 1; i >= 0; i--) {
+				if (sqt->src_full_path[i] == '/') {
+					sqt->src_fname = &sqt->src_full_path[++i];
+						break;
+				}
+			}
+			list_add(&sqt->list, list);
 		}
-		list_add(&sqt->list, install_task_list);
+	} else if (sbi->compr_type) { // In "-c comp r_type" param case. It affect all of file.
+		sqt = malloc(sizeof(struct install_task));
+		if (!sqt) {
+			log_error("not enough memory");
+			return -ENOMEM;
+		}
+		memset(sqt, 0, sizeof(*sqt));
+		snprintf(sqt->src_full_path, VDFS4_FULL_PATH_LEN,
+			"%s/", sbi->root_path);
+		sqt->compress_type =
+			get_compression_type(sbi->compr_type);
+		sqt->cmd |=CMD_COMPRESS;
+		list_add(&sqt->list, list);
 	}
 	return 0;
 err:
-	config_file_format();
+	log_error("check config file format. please refer usage message.\n");
 	free(sqt);
 	return ret;
-}
-
-static __u64 __find_parent_id(struct vdfs4_sb_info *sbi, __u64 parent_id,
-		char *name)
-{
-	struct vdfs4_cattree_record *record = vdfs4_cattree_find(
-		&sbi->cattree.vdfs4_btree, parent_id, name, strlen(name),
-		VDFS4_BNODE_MODE_RW);
-	if (IS_ERR(record))
-		return PTR_ERR(record);
-
-	parent_id = le64_to_cpu(record->key->object_id);
-
-	vdfs4_release_record((struct vdfs4_btree_gen_record *)record);
-	return parent_id;
-}
-
-struct vdfs4_cattree_record *find_record(struct vdfs4_sb_info *sbi,
-		char *path)
-{
-	int i, len = strlen(path);
-	char *name = "root";
-	__u64 parent_id = 0;
-
-	for (i = 0; i < len; i++) {
-		if (path[i] == '/') {
-			path[i] = 0;
-			parent_id = __find_parent_id(sbi, parent_id, name);
-			path[i] = '/';
-			if (IS_ERR_VALUE(parent_id)) {
-				log_error("%s - %s", path,
-						strerror(-parent_id));
-				return ERR_PTR(parent_id);
-			}
-			name = &path[i + 1];
-			if (name[0] == '/')
-				name++;
-		}
-	}
-	return vdfs4_cattree_find(&sbi->cattree.vdfs4_btree, parent_id, name,
-			strlen(name), VDFS4_BNODE_MODE_RW);
 }
 
 int get_free_file_thread(void)
@@ -1511,15 +1708,15 @@ void compress_file_thread(void *arg)
 	int ret = 0;
 	off_t new_file_size = 0;
 	u_int64_t  begin, block = 0;
-	int sign_dlink = 0;
 	struct vdfs4_catalog_file_record *f_rec = NULL;
 	struct vdfs4_cattree_record *record = NULL;
 	__mode_t src_mode;
+	struct profiled_file* pfile = NULL;
+	char* src_base_path;
 	pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 	pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
 	/*Do not repeat copy data for hlinks*/
 	while (!tinfo->exit) {
-		sign_dlink = 0;
 		pthread_mutex_lock(&tinfo->compr_file_mutex);
 		while (!(tinfo->has_data)) {
 			pthread_cond_wait(&tinfo->compr_file_cond,
@@ -1533,7 +1730,6 @@ void compress_file_thread(void *arg)
 		record = NULL;
 		ret = 0;
 		pthread_mutex_unlock(&tinfo->compr_file_mutex);
-		/*parent_id != 0 only for dlink records*/
 		pthread_mutex_lock(&files_count_mutex);
 		if (*tinfo->error) {
 			ret = *tinfo->error;
@@ -1541,22 +1737,11 @@ void compress_file_thread(void *arg)
 			goto exit;
 		}
 		pthread_mutex_unlock(&files_count_mutex);
-		if (!tinfo->parent_id) {
+		assert(tinfo->parent_id == 0);
 
-			record = find_record(tinfo->sbi,
-					&tinfo->ptr->src_full_path[strlen(
-						tinfo->sbi->root_path)]);
-
-		} else {
-			record = vdfs4_cattree_find(
-					&tinfo->sbi->cattree.vdfs4_btree,
-					tinfo->parent_id,
-					NULL, 0, VDFS4_BNODE_MODE_RW);
-
-			sign_dlink |= (1 << VDFS4_COMPRESSED_FILE);
-			if (tinfo->ptr->cmd & CMD_AUTH)
-				sign_dlink |= (1 << VDFS4_AUTH_FILE);
-		}
+		record = find_record(tinfo->sbi,
+				&tinfo->ptr->src_full_path[strlen(
+					tinfo->sbi->root_path)]);
 		if (IS_ERR(record)) {
 			ret = PTR_ERR(record);
 			goto err_exit;
@@ -1573,18 +1758,15 @@ void compress_file_thread(void *arg)
 			f_rec = (struct vdfs4_catalog_file_record *)
 					(record->val);
 			if (IS_FLAG_SET(f_rec->common.flags,
-					VDFS4_COMPRESSED_FILE)) {
-				log_info("File %s has been copied already",
-						tinfo->ptr->src_full_path);
+					VDFS4_HLINK_TUNE_TRIED)) {
+				log_info("File %s has been tried"
+					 " to comp & copy already",
+					 tinfo->ptr->src_full_path);
 				pthread_mutex_unlock(&find_record_mutex);
 				goto exit;
-			} else {
-				if (tinfo->ptr->cmd & CMD_COMPRESS)
-					f_rec->common.flags |=
-						(1 << VDFS4_COMPRESSED_FILE);
-				if (tinfo->ptr->cmd & CMD_DLINK)
-					f_rec->common.flags |=
-							(1 << SIGNED_DLINK);
+			} else if (tinfo->ptr->cmd & CMD_COMPRESS) {
+				f_rec->common.flags |=
+					(1 << VDFS4_HLINK_TUNE_TRIED);
 			}
 			pthread_mutex_unlock(&find_record_mutex);
 		} else {
@@ -1604,63 +1786,68 @@ void compress_file_thread(void *arg)
 			goto exit;
 		}
 
-		if (record->key->record_type == VDFS4_CATALOG_DLINK_RECORD) {
-			pthread_mutex_lock(&find_record_mutex);
-			if (tinfo->ptr->cmd & CMD_COMPRESS) {
-				f_rec->common.flags |=
-						(1 << VDFS4_COMPRESSED_FILE);
-				if (tinfo->sbi->rsa_key &&
-					(!S_ISLNK(f_rec->common.file_mode))) {
-					int fd = open(tinfo->ptr->src_full_path,
-							O_RDONLY);
-					if (fd < 0) {
-						ret = errno;
-						perror("can not open file"
-								" for reading");
-						if (ret == EACCES)
-							printf("Don't"
-							" you forget sudo?\n");
-						pthread_mutex_unlock(
-							&find_record_mutex);
-						goto err_exit;
-					}
-					if (IS_FLAG_SET(tinfo->sbi->service_flags,
-							SIGN_ALL) ||
-							is_need_sign(fd)) {
-						f_rec->common.flags |=
-							(1 << VDFS4_AUTH_FILE);
-					}
-					close(fd);
-				}
+		if (IS_FLAG_SET(f_rec->common.flags, VDFS4_NOCOMPRESS_FILE)) {
+			f_rec->common.flags &= ~(1 << VDFS4_NOCOMPRESS_FILE);
+			/* EXEC files must stay compressed to retain auth feature */
+			if(!is_exec_file_path(tinfo->ptr->src_full_path)) {
+				ret = 0;
+				clear_tuned_flags(&(f_rec->common.flags));
+				goto exit;
 			}
-			pthread_mutex_unlock(&find_record_mutex);
-			goto exit;
+		}
+
+		/* encryption can be enabled via:
+		 * - VDFS4_ENCRYPTED_FILE record flag set in insert_record() */
+		if(IS_FLAG_SET(f_rec->common.flags, VDFS4_ENCRYPTED_FILE) ||
+			(tinfo->ptr->cmd & CMD_ENCRYPT)) {
+			assert(record->key->record_type == VDFS4_CATALOG_FILE_RECORD);
+			tinfo->ptr->cmd |= CMD_ENCRYPT;
+			/* force compression */
+			goto do_compress;
 		}
 
 		ret = check_file_before_compress(tinfo->ptr->src_full_path,
-				tinfo->ptr->cmd & CMD_COMPRESS, &src_mode);
+				tinfo->ptr->cmd & CMD_COMPRESS, &src_mode,
+				tinfo->min_compressed_size);
 		if (ret) {
 			if (ret == -ENOTCOMPR) {
 				log_info("File %s was not compressed because "
 						"of too small size",
 						tinfo->ptr->src_full_path);
+				clear_tuned_flags(&(f_rec->common.flags));
 				ret = 0;
 			}
 			goto err_exit;
 		}
 
-		if (tinfo->ptr->cmd & CMD_COMPRESS)
+do_compress:
+		if ((tinfo->ptr->cmd & CMD_ENCRYPT) &&
+				(tinfo->ptr->cmd & CMD_COMPRESS))
+			log_info("Compress and encrypt file %s", tinfo->ptr->src_full_path);
+		else if (tinfo->ptr->cmd & CMD_COMPRESS)
 			log_info("Compress file %s", tinfo->ptr->src_full_path);
+		else if(tinfo->ptr->cmd & CMD_ENCRYPT)
+			log_info("Encrypt file %s", tinfo->ptr->src_full_path);
+
+		src_base_path = strchr(tinfo->ptr->src_full_path, '/');
+		/* remove multiple / at the beginning - need just one */
+		while (src_base_path[0] == '/' && src_base_path[1] == '/')
+			src_base_path += 1;
+		pfile = find_prof_data_path(&tinfo->sbi->prof_data, src_base_path);
+		if (pfile)
+			SET_FLAG(f_rec->common.flags, VDFS4_PROFILED_FILE);
 
 		ret = encode_file(tinfo->sbi, tinfo->ptr->src_full_path,
 				tinfo->sbi->disk_op_image.file_id,
 				tinfo->ptr->cmd & CMD_COMPRESS,
 				tinfo->ptr->compress_type, &new_file_size,
-				tinfo->rsa_copy, sign_dlink,
+				tinfo->rsa_copy,
 				tinfo->sbi->log_chunk_size,
 				tinfo->sbi->tmpfs_dir, &block,
 				(tinfo->thread_num - 1), tinfo->sbi->hash_alg,
-				tinfo->sbi->hash_len);
+				tinfo->sbi->hash_len,
+				tinfo->ptr->cmd & CMD_ENCRYPT,
+				pfile);
 
 		if (!new_file_size)
 			goto exit;
@@ -1668,6 +1855,12 @@ void compress_file_thread(void *arg)
 		if (ret) {
 			if (ret == -ENOTCOMPR) {
 				ret = 0;
+			} else if (ret == -ENOSPC) {
+				log_error("Compression error - %d,"
+						" file - %s", ret,
+						tinfo->ptr->src_full_path);
+				log_error("Mkfs can't allocate enough disk space");
+				exit(-ENOSPC);
 			} else {
 				log_error("Compression error - %d,"
 						" file - %s", ret,
@@ -1677,11 +1870,10 @@ void compress_file_thread(void *arg)
 		} else {
 			pthread_mutex_lock(&find_record_mutex);
 			if (tinfo->ptr->cmd & CMD_COMPRESS)
+				f_rec->common.flags |= (1 << VDFS4_COMPRESSED_FILE);
+			if (tinfo->ptr->cmd & CMD_ENCRYPT)
 				f_rec->common.flags |=
-						(1 << VDFS4_COMPRESSED_FILE);
-			if (tinfo->ptr->cmd & CMD_DLINK)
-				f_rec->common.flags |=
-						(1 << SIGNED_DLINK);
+						(1 << VDFS4_ENCRYPTED_FILE);
 			pthread_mutex_unlock(&find_record_mutex);
 		}
 
@@ -1748,15 +1940,16 @@ static int compress_dir(struct vdfs4_sb_info *sbi,
 	DIR *dir;
 	char *path = NULL;
 	struct dirent *data;
+	struct dirent entry;
 	struct stat info;
 	struct install_task obj_ptr;
 	int count = 0;
 	char *dirpath = ptr->src_full_path;
+	memset(&obj_ptr, 0, sizeof(struct install_task));
+
 	if (ptr->cmd & CMD_COMPRESS)
 		log_info("Recursive compress directory %s",
 				dirpath);
-	else if (ptr->cmd & CMD_COMPRESS)
-		log_info("Recursive compress directory %s", dirpath);
 	dir = opendir(dirpath);
 
 	if (dir == NULL) {
@@ -1765,10 +1958,22 @@ static int compress_dir(struct vdfs4_sb_info *sbi,
 	}
 	obj_ptr.cmd = ptr->cmd;
 	obj_ptr.compress_type = ptr->compress_type;
-	while ((data = readdir(dir)) != NULL) {
+	/*while ((data = readdir(dir)) != NULL) {*/
+	ret = readdir_r(dir, &entry, &data);
+	while (!ret && data) {
 		if ((strcmp(data->d_name, ".") == 0) ||
 				(strcmp(data->d_name, "..") == 0))
-			continue;
+			/*continue;*/
+			goto next;
+		if (strlen(dirpath) + strlen(data->d_name) + 2 >
+					VDFS4_FULL_PATH_LEN) {
+			log_error("Full path to file is too long - %s/%s."
+					"Should be not more than %d",
+					dirpath, data->d_name,
+					VDFS4_FULL_PATH_LEN);
+			ret = -ENAMETOOLONG;
+			goto exit;
+		}
 		path = calloc(1, strlen(dirpath) + strlen(data->d_name) + 2);
 		if (!path) {
 			ret = -ENOMEM;
@@ -1802,6 +2007,7 @@ static int compress_dir(struct vdfs4_sb_info *sbi,
 			thread_file[tnum].has_data = 1;
 			thread_file[tnum].is_free = 0;
 			thread_file[tnum].error = &ret_thread;
+			thread_file[tnum].min_compressed_size = sbi->min_compressed_size;
 			pthread_mutex_lock(&files_count_mutex);
 			count++;
 
@@ -1814,10 +2020,13 @@ static int compress_dir(struct vdfs4_sb_info *sbi,
 
 		free(path);
 		path = NULL;
+next:
+		ret = readdir_r(dir, &entry, &data);
 	}
-	wait_finish(&count);
+
 	ret = ret_thread;
 exit:
+	wait_finish(&count);
 	free(path);
 	closedir(dir);
 	return ret;
@@ -1842,6 +2051,19 @@ int tune_files(struct vdfs4_sb_info *sbi,
 	struct list_head *pos;
 	struct stat stat_info;
 	int count = 0;
+	/* first we need process files that musn't be compressed */
+	for (pos = install_task_list->next; pos != install_task_list;
+					pos = pos->next) {
+		struct install_task *ptr =
+					list_entry(pos, struct install_task, list);
+		if(ptr->cmd == CMD_DECOMPRESS) {
+			ret = disable_compression(ptr, sbi);
+			if(ret) {
+				log_error("Disable compression error=%d", ret);
+				return ret;
+			}
+		}
+	}
 	for (pos = install_task_list->next; pos != install_task_list;
 				pos = pos->next) {
 		struct install_task *ptr =
@@ -1875,6 +2097,7 @@ int tune_files(struct vdfs4_sb_info *sbi,
 				count++;
 				thread_file[tnum].count = &count;
 				thread_file[tnum].error = &ret_thread;
+				thread_file[tnum].min_compressed_size = sbi->min_compressed_size;
 				pthread_mutex_unlock(&files_count_mutex);
 				pthread_cond_signal(&thread_file[tnum].
 						compr_file_cond);
@@ -1894,9 +2117,133 @@ int tune_files(struct vdfs4_sb_info *sbi,
 		}
 	}
 
-	wait_finish(&count);
+
 	ret = ret_thread;
 exit:
+	wait_finish(&count);
 	return ret;
 }
 
+static int disable_file_compression(char* path, struct vdfs4_sb_info* sbi)
+{
+	struct vdfs4_cattree_record *record;
+	struct vdfs4_catalog_file_record *file_rec;
+	char *rec_path;
+	if(!path || !sbi)
+		return -EINVAL;
+
+	rec_path = malloc(VDFS4_FULL_PATH_LEN + 1);
+	if(!rec_path)
+		return -ENOMEM;
+
+	log_info("Disabling compression on file=%s", path);
+	strncpy(rec_path, path + strlen(sbi->root_path), VDFS4_FULL_PATH_LEN);
+	record = find_record(sbi, rec_path);
+	free(rec_path);
+	if (IS_ERR(record)) {
+		log_error("Record for file not found!");
+		return PTR_ERR(record);
+	}
+
+	file_rec = (struct vdfs4_catalog_file_record *)
+						record->val;
+	file_rec->common.flags |= (1 << VDFS4_NOCOMPRESS_FILE);
+	vdfs4_release_record((struct vdfs4_btree_gen_record *)
+						record);
+	return 0;
+}
+
+static int disable_dir_compression(char* dir_path, struct vdfs4_sb_info* sbi)
+{
+	DIR *dir;
+	int ret;
+	struct dirent *data;
+	struct dirent entry;
+	char *cur_path;
+	if(!dir_path || !sbi)
+		return -EINVAL;
+	cur_path = malloc(VDFS4_FULL_PATH_LEN + 1);
+	if(!cur_path)
+		return -ENOMEM;
+	dir = opendir(dir_path);
+	if (!dir) {
+		log_error("disable_dir_compression Can't open dir %s(err:%d)",
+			  dir_path, errno);
+		ret = -errno;
+		goto err_dir;
+	}
+	ret = readdir_r(dir, &entry, &data);
+	while (!ret && data) {
+		struct stat st;
+		if ((strcmp(data->d_name, ".") == 0) ||
+			(strcmp(data->d_name, "..") == 0))
+			goto next;
+		cur_path[0] = '\0';
+		strncat(cur_path, dir_path, strlen(dir_path));
+		if(cur_path[strlen(cur_path) - 1] != '/')
+			strncat(cur_path, "/", 1);
+		strncat(cur_path, data->d_name, strlen(data->d_name));
+
+		ret = lstat(cur_path, &st);
+		if(ret) {
+			log_error("disable_dir_compression failed to stat err=%d path: %s",
+					-errno, cur_path);
+			ret = -errno;
+			goto err;
+		}
+
+		if(S_ISREG(st.st_mode)) {
+			ret = disable_file_compression(cur_path, sbi);
+			if(ret)
+				goto err;
+		} else if(S_ISDIR(st.st_mode)) {
+			log_info("Resurively disabling compression in directory %s", cur_path);
+			ret = disable_dir_compression(cur_path, sbi);
+			if(ret)
+				goto err;
+		}
+next:
+		ret = readdir_r(dir, &entry, &data);
+		continue;
+	}
+	if(ret) {
+		log_error("disable_dir_compression readdir err=%d path=%s",
+				ret, dir_path);
+		goto err;
+	}
+err:
+	closedir(dir);
+err_dir:
+	free(cur_path);
+	return ret;
+}
+
+int disable_compression(struct install_task *task, struct vdfs4_sb_info* sbi)
+{
+	struct stat st;
+	int ret;
+
+	if(!task || !sbi)
+		return -EFAULT;
+	if(!strlen(task->src_full_path))
+		return -EINVAL;
+
+	ret = lstat(task->src_full_path, &st);
+	if(ret) {
+		log_error("disable_compression failed to stat err=%d path: %s",
+				-errno, task->src_full_path);
+		return -errno;
+	}
+
+	if(S_ISREG(st.st_mode)) {
+		ret = disable_file_compression(task->src_full_path, sbi);
+		if(ret)
+			return ret;
+	} else if(S_ISDIR(st.st_mode)) {
+		ret = disable_dir_compression(task->src_full_path, sbi);
+		if(ret)
+			return ret;
+	}
+
+	return 0;
+}

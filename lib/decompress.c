@@ -20,9 +20,11 @@
  */
 
 #include "compress.h"
+#include <encrypt.h>
+#include "vdfs_tools.h"
 #include "zlib.h"
-#include <lzoconf.h>
-#include <lzo1x.h>
+#include <lzo/lzoconf.h>
+#include <lzo/lzo1x.h>
 #include <openssl/aes.h>
 
 int decompress_zlib(unsigned char *ibuff, int ilen,
@@ -102,8 +104,17 @@ int decompress_gzip(unsigned char *ibuff, int ilen,
 	return -2;
 };
 
-
-
+static int get_sign_length_from_type(int type)
+{
+	switch (type) {
+		case VDFS4_SIGN_RSA1024:
+			return 128;
+		case VDFS4_SIGN_RSA2048:
+			return 256;
+		default:
+			return 0;
+	}
+}
 
 int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 		off_t *data_area_size, struct vdfs4_comp_extent **ext,
@@ -112,12 +123,12 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 	int ret = 0;
 	loff_t first_ext_pos;
 	int ext_n = 0;
-	int table_size;
-	int hash_len = 0;
+	int table_size, descr_size;
+	int hash_len = 0, sign_len;
 	if (pread(fd, descr, sizeof(struct vdfs4_comp_file_descr),
 			file_size_offset - sizeof(*descr)) == -1) {
 		ret = -errno;
-		log_error("cannot read from file", strerror(-ret));
+		log_error("cannot read from file(err:%d)", errno);
 		return ret;
 	}
 	*log_chunk_size = le32_to_cpu(descr->log_chunk_size);
@@ -130,30 +141,33 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 	else if (!memcmp(descr->magic + 1, VDFS4_COMPR_LZO_FILE_DESCR_MAGIC,
 			sizeof(descr->magic) - 1))
 		*compress_type = VDFS4_COMPR_LZO;
-	else if (!memcmp(descr->magic + 1, VDFS4_COMPR_ZHW_FILE_DESCR_MAGIC,
-			sizeof(descr->magic) - 1))
-		*compress_type = VDFS4_COMPR_ZHW;
 	else
 		return -EINVAL;
 
+	descr_size = sizeof(struct vdfs4_comp_file_descr);
+
+	if (le16_to_cpu(descr->layout_version) == VDFS4_COMPR_LAYOUT_VER_05) {
+		descr->sign_type = VDFS4_SIGN_RSA1024;
+		memset(descr->reserved, 0, sizeof(descr->reserved));
+		descr_size = VDFS4_COMPR_FILE_DESC_LEN_05;
+	}
+
 	ext_n = le16_to_cpu(descr->extents_num);
+	sign_len = get_sign_length_from_type(descr->sign_type);
 	if ((unsigned) ext_n > file_size_offset / sizeof(struct vdfs4_comp_extent)
 			|| ext_n < 0)
 		return -EINVAL;
-	first_ext_pos = sizeof(*descr) + ext_n *
-			sizeof(struct vdfs4_comp_extent);
+	first_ext_pos = (loff_t)descr_size +
+			(((loff_t)ext_n) * ((loff_t)sizeof(struct vdfs4_comp_extent)));
 	if (descr->magic[0] == VDFS4_MD5_AUTH ) {
 		hash_len = VDFS4_MD5_HASH_LEN;
-		first_ext_pos += hash_len * (ext_n + 1)
-			+ VDFS4_CRYPTED_HASH_LEN;
+		first_ext_pos += hash_len * (ext_n + 1) + sign_len;
 	} else if (descr->magic[0] == VDFS4_SHA1_AUTH) {
 		hash_len = VDFS4_SHA1_HASH_LEN;
-		first_ext_pos += hash_len * (ext_n + 1)
-			+ VDFS4_CRYPTED_HASH_LEN;
+		first_ext_pos += hash_len * (ext_n + 1) + sign_len;
 	} else if (descr->magic[0] == VDFS4_SHA256_AUTH) {
 		hash_len = VDFS4_SHA256_HASH_LEN;
-		first_ext_pos += hash_len * (ext_n + 1)
-			+ VDFS4_CRYPTED_HASH_LEN;
+		first_ext_pos += hash_len * (ext_n + 1) + sign_len;
 	}
 	first_ext_pos = file_size_offset - first_ext_pos;
 	*data_area_size = first_ext_pos;
@@ -164,7 +178,7 @@ int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,
 		table_size = ext_n * sizeof(struct vdfs4_comp_extent);
 		if (pread(fd, *ext, table_size, first_ext_pos) == -1) {
 			ret = errno;
-			log_error("cannot read from file", strerror(ret));
+			log_error("cannot read from file(err:%d)", errno);
 			return ret;
 		}
 	}
@@ -210,10 +224,11 @@ int not_supported_decompressor(unsigned char *ibuff, int ilen,
 
 int decompress_file(int src_fd, int dst_fd, unsigned int extents_num,
 		int compress_type, struct vdfs4_comp_extent *extents,
-		int log_chunk_size)
+		int log_chunk_size,
+		struct vdfs4_comp_file_descr *descr, AES_KEY *encryption_key)
 {
 	int ret = 0;
-	unsigned have;
+	unsigned have = 0;
 	unsigned char *in;
 	unsigned char *out;
 
@@ -222,13 +237,17 @@ int decompress_file(int src_fd, int dst_fd, unsigned int extents_num,
 	u_int32_t ext_n = 0;
 	ssize_t avail_in;
 	int out_len;
+	u64 aes_counter;
 	off_t init_offset = lseek(src_fd, 0, SEEK_CUR);
 	assert(compress_type >= VDFS4_COMPR_ZLIB &&
 	       compress_type < VDFS4_COMPR_NR);
 	int chunk_size = 1 << log_chunk_size;
 
-	in = malloc(chunk_size);
-	out = malloc(chunk_size);
+	/* why chunk_size*2? look on comments in
+	 * compress_file() and force_compress
+	 */
+	in = malloc(chunk_size*2);
+	out = malloc(chunk_size*2);
 
 	if (!in || !out)
 		goto exit;
@@ -241,15 +260,29 @@ int decompress_file(int src_fd, int dst_fd, unsigned int extents_num,
 		if (avail_in == 0) {
 			ret = 0;
 			break;
-		} else if (avail_in == -1) {
+		} else if (avail_in == -1 || avail_in != (int)cur_ext->len_bytes) {
 			ret = -errno;
 			goto exit;
+		}
+
+		if (cur_ext->flags & VDFS4_CHUNK_FLAG_ENCRYPTED) {
+			if (encryption_key != NULL) {
+				aes_counter = (ext_n << log_chunk_size) / AES_BLOCK_SIZE;
+				encrypt_chunk(in, out, descr->aes_nonce,
+						encryption_key, avail_in,
+						aes_counter);
+				memcpy(in, out, avail_in);
+			} else {
+				log_error("We have encrypted files,"
+						" but no key to decode them. Abort!\n");
+				ret = -ENOENT;
+				goto exit;
+			}
 		}
 
 		if (cur_ext->flags & VDFS4_CHUNK_FLAG_UNCOMPR) {
 			have = avail_in;
 			memcpy(out, in, have);
-			ret = 0;
 			goto write;
 		}
 		out_len = chunk_size;
@@ -299,7 +332,7 @@ free_buf:
 }
 
 int decode_file(const char *src_name, int dst_fd, int need_decompress,
-		int *flags)
+		int *flags, AES_KEY *encryption_key)
 {
 	int ret = 0;
 	struct vdfs4_comp_extent *exts = NULL;
@@ -308,12 +341,14 @@ int decode_file(const char *src_name, int dst_fd, int need_decompress,
 	int src_fd = open(src_name, O_RDONLY);
 	int is_authenticated = 0;
 	int log_chunk_size;
+	struct vdfs4_comp_file_descr descriptor;
+	memset(&descriptor, 0, sizeof(struct vdfs4_comp_file_descr));
 	if (src_fd == -1)
 		return errno;
 
 	ret = analyse_existing_file(src_fd, &compress_type,
 			&chunks_num, &src_file_size, &data_area_size, &exts,
-			&is_authenticated, &log_chunk_size);
+			&is_authenticated, &log_chunk_size, &descriptor);
 	if (ret)
 		goto free_exts;
 	*flags = (is_authenticated << VDFS4_AUTH_FILE);
@@ -328,10 +363,10 @@ int decode_file(const char *src_name, int dst_fd, int need_decompress,
 
 	if (need_decompress) {
 		ret = decompress_file(src_fd, dst_fd, chunks_num,
-				compress_type, exts, log_chunk_size);
+				compress_type, exts, log_chunk_size,
+				&descriptor, encryption_key);
 		if (ret)
-			log_error("Fail while decompression - %s",
-					strerror(-ret));
+			log_error("Fail while decompression - (ret:%d)", ret);
 	}
 
 free_exts:
@@ -350,5 +385,4 @@ int (*decompressor[VDFS4_COMPR_NR])(unsigned char *ibuff, int ilen,
 	[VDFS4_COMPR_XZ]		= not_supported_decompressor,
 	[VDFS4_COMPR_LZMA]	= not_supported_decompressor,
 	[VDFS4_COMPR_GZIP]	= decompress_gzip,
-	[VDFS4_COMPR_ZHW]	= decompress_zlib,
 };

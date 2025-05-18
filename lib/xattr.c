@@ -18,17 +18,15 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301,
  * USA.
  */
-
 #ifndef USER_SPACE
 #include <linux/xattr.h>
 #include <linux/fs.h>
 #include <linux/posix_acl.h>
 #include <linux/posix_acl_xattr.h>
-#else
-#include "vdfs_tools.h"
-#include <sys/xattr.h>
 #endif
 
+#include "vdfs_tools.h"
+#include <sys/xattr.h>
 #include "vdfs4.h"
 #include "xattrtree.h"
 
@@ -56,7 +54,7 @@ static int check_xattr_prefix(const char *name)
 
 	return ret;
 }
-#endif
+#endif /* USER_SPACE */
 
 /* Now this function is not used in the utilities. Hide under ifdef to avoid
  * build warnings */
@@ -95,9 +93,9 @@ static int xattrtree_insert(struct vdfs4_btree *tree, u64 object_id,
 	key->name_len = (__u8)name_len;
 
 	/* Save preceding length byte */
-	*(unsigned char *)get_value_pointer(key) = val_len;
+	*(unsigned char *)get_value_pointer(key) = (unsigned char)val_len;
 	/* Copy value excluding length byte  */
-	memcpy(get_value_pointer(key) + 1, value, val_len);
+	memcpy((void*)((char*)get_value_pointer(key) + 1), value, val_len);
 
 	ret = vdfs4_btree_insert(tree, insert_data, 0);
 	kfree(insert_data);
@@ -208,7 +206,7 @@ static int xattrtree_remove_record(struct vdfs4_btree *tree, u64 object_id,
 
 	return ret;
 }
-#endif
+#endif /* USER_SPACE */
 
 static int xattrtree_get_next_record(struct vdfs4_xattrtree_record *record)
 {
@@ -746,9 +744,8 @@ int vdfs4_init_security_xattrs(struct inode *inode,
 	return ret;
 }
 
-#endif /* !USER_SPACE */
+#endif /* USER_SPACE */
 
-#ifdef USER_SPACE
 void dummy_xattrtree_record_init(struct vdfs4_xattrtree_key *xattr_record)
 {
 	int key_len, name_len;
@@ -839,8 +836,7 @@ int get_set_xattrs(struct vdfs4_sb_info *sbi, char *path, u64 object_id)
 			errno = 0;
 		} else if (errno != ENODATA) {
 			ret = -errno;
-			log_error("Can't list xattr because of %s",
-					strerror(errno));
+			log_error("Can't list xattr because of err(%d)", errno);
 			errno = 0;
 		}
 		goto exit;
@@ -854,9 +850,10 @@ int get_set_xattrs(struct vdfs4_sb_info *sbi, char *path, u64 object_id)
 		memset(val, 0, XATTR_VAL_SIZE);
 		size = getxattr(path, name, val, XATTR_VAL_SIZE);
 		if (size < 0) {
-			log_error("Can not get xattr %s for %s: %s",
-					 name, path, strerror(errno));
-			return -1;
+			log_error("Can not get xattr %s for %s(err:%d)",
+					name, path, errno);
+			ret = -1;
+			goto exit;
 		}
 		ret = xattrtree_insert(&sbi->xattrtree.vdfs4_btree, object_id,
 				name, size, val);
@@ -891,15 +888,14 @@ int unpack_xattr(struct vdfs4_btree *xattr_tree, char *path, u64 object_id)
 		memset(name, 0, sizeof(name));
 		memcpy(name, record->key->name, record->key->name_len);
 		if (setxattr(path, name, (void *)(record->val + 1),
-					(size_t)(*(unsigned char *)record->val),
-					XATTR_CREATE)) {
-				log_error("cannot set xattr %s for file %s:"
-						" %s\n",
-						 record->key->name, path,
-						 strerror(errno));
-				ret = -errno;
-				goto exit;
-			}
+			     (size_t)(*(unsigned char *)record->val), 0)) {
+			log_error("cannot set xattr %s for file %s"
+				  " (err:%d)\n",
+				  record->key->name, path,
+				  errno);
+			ret = -errno;
+			goto exit;
+		}
 		ret = xattrtree_get_next_record(record);
 		if (ret) {
 			if (ret == -ENOENT)
@@ -915,4 +911,3 @@ exit:
 	return ret;
 }
 
-#endif

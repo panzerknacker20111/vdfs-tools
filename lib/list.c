@@ -19,7 +19,7 @@
  * USA.
  */
 
-#include "../include/vdfs_tools.h"
+#include "../include/vdfs_list.h"
 
 void vdfs4_list_init(struct vdfs4_list *list)
 {
@@ -27,6 +27,22 @@ void vdfs4_list_init(struct vdfs4_list *list)
 	list->head_node.prev = NULL;
 	list->head_node.next = NULL;
 	list->count = 0;
+}
+
+void vdfs4_list_free(struct vdfs4_list *list)
+{
+	struct list_node *curr_node = list->head_node.next;
+	struct list_node *next_node;
+
+	for (;;)
+	{
+		if (!curr_node)
+			return;
+
+		next_node = curr_node->next;
+		free(curr_node);
+		curr_node = next_node;
+	}
 }
 
 void vdfs4_add_to_list(struct vdfs4_list *list, void *data, u_int32_t data_size)
@@ -53,7 +69,7 @@ void vdfs4_add_to_list(struct vdfs4_list *list, void *data, u_int32_t data_size)
 	list->count++;
 }
 
-inline void *vdfs4_get_cur_elem_data_from_list(struct vdfs4_list *list)
+static inline void *vdfs4_get_cur_elem_data_from_list(struct vdfs4_list *list)
 {
 	if (list->current_node == NULL)
 		return NULL;
