@@ -22,12 +22,6 @@
 #ifndef _VDFS4_DEBUG_H_
 #define _VDFS4_DEBUG_H_
 
-#ifdef CONFIG_KPI_SYSTEM_SUPPORT
-extern void set_kpi_hw_error(char* prefix, char* msg);
-#else
-#define set_kpi_hw_error(x,y)
-#endif
-
 #ifndef USER_SPACE
 #include <linux/crc32.h>
 #endif
@@ -39,12 +33,14 @@ extern void set_kpi_hw_error(char* prefix, char* msg);
  * @param [in]	len	Byte count in the dump.
  * @return	void
  */
-#define VDFS4_MDUMP(log_str, buf, len)\
+#define VDFS4_MDUMP(type, buf, len)\
 	do {\
-		VDFS4_ERR(log_str);\
-		print_hex_dump(KERN_ERR, "",\
-				DUMP_PREFIX_NONE, 16, 1, buf, len,\
+		if ((type) & vdfs4_debug_mask) {\
+			VDFS4_DEBUG(type, "");\
+			print_hex_dump(KERN_INFO, "vdfs4 ",\
+					DUMP_PREFIX_ADDRESS, 16, 1, buf, len,\
 					true);\
+		} \
 	} while (0)
 
 /**
@@ -56,12 +52,6 @@ extern void set_kpi_hw_error(char* prefix, char* msg);
 	do {\
 		printk(KERN_ERR "vdfs4-ERROR:%d:%s: " fmt "\n", __LINE__,\
 			__func__, ##__VA_ARGS__);\
-		set_kpi_hw_error("vdfs4-ERROR:", fmt);\
-	} while (0)
-
-#define VDFS4_MOUNT_INFO(fmt, ...)\
-do {\
-	printk(KERN_INFO "vdfs4-INFO: " fmt, ##__VA_ARGS__);\
 	} while (0)
 
 /** Enables VDFS4_DEBUG_SB() in super.c */
@@ -99,7 +89,7 @@ do {\
 #define VDFS4_DEBUG(type, fmt, ...)\
 	do {\
 		if ((type) & vdfs4_debug_mask)\
-			printk(KERN_INFO "vdfs4-DEBUG:%s:%d:%s: " fmt "\n", __FILE__,\
+			printk(KERN_INFO "%s:%d:%s: " fmt "\n", __FILE__,\
 				__LINE__, __func__, ##__VA_ARGS__);\
 	} while (0)
 #else

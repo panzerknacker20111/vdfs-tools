@@ -22,6 +22,10 @@
 #ifndef XATRTREE_H_
 #define XATRTREE_H_
 
+#ifdef USER_SPACE
+#include "vdfs_tools.h"
+#endif
+
 #include "vdfs4_layout.h"
 
 #define XATTRTREE_LEAF "XAle"
@@ -30,7 +34,7 @@
 
 struct vdfs4_xattrtree_record {
 	struct vdfs4_xattrtree_key *key;
-	char *val;
+	void *val;
 };
 
 

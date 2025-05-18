@@ -39,18 +39,22 @@
 int parse_cmd(int argc, char *argv[], struct vdfs4_sb_info *sbi);
 u_int64_t read_value_with_multiplier(const char *value);
 int insert_metadata(struct vdfs4_sb_info *sbi, char * dir_path, int parent_id,
-		__u64 *object_count);
+		__u64 *object_count, int compress_to_dlink);
 int insert_record(struct vdfs4_sb_info *sbi, char * path, char * name,
 		struct stat *stat_info, int uuid, int parent_id,
-		__u64 *obj_count);
+		__u64 *obj_count, int compress_to_dlink);
 int insert_data(struct vdfs4_sb_info *sbi, char * dir_path, __u64 parent_id,
 		u64 *file_offset_abs);
 int fill_image_metadata(struct vdfs4_sb_info *sbi);
 
 __u64 get_metadata_size(struct vdfs4_sb_info *sbi);
-int preprocess_sq_tasklist(struct vdfs4_sb_info *sbi, struct list_head *list,
-		FILE *list_file);
+int preprocess_sq_tasklist(struct vdfs4_sb_info *sbi, struct list_head *list);
+
+void config_file_format(void);
+int copy_dlink_file_to_image(struct vdfs4_sb_info *sbi,
+		char *file_name, __u64 obj_id, unsigned cmd, int *count,
+		int *ret_thread);
+int copy_dlink_files(struct vdfs4_sb_info *sbi);
 void wait_finish(int *count);
 int get_free_file_thread(void);
-int disable_compression(struct install_task *task, struct vdfs4_sb_info* sbi);
 #endif /* __MKFS_H__ */

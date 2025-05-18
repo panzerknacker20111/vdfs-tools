@@ -27,6 +27,16 @@
 #define UTIL_INVALID_MAGIC		1
 #define UTIL_INVALID_CRC		2
 
+void print_version()
+{
+#ifdef GIT_BRANCH
+	printf("git branch: %s\n", GIT_BRANCH);
+#endif
+#ifdef GIT_HASH
+	printf("git hash: %s\n", GIT_HASH);
+#endif
+}
+
 void util_add_btree_size(struct vdfs4_sb_info *sbi,
 		struct vdfs_tools_btree_info *tree)
 {
@@ -51,7 +61,7 @@ void util_add_btree_size(struct vdfs4_sb_info *sbi,
  *					the function will update crc only.
  * @param [in]	magic_len		Length of the magic word in bytes
   */
-int util_update_crc(char *buff, int buff_size, const char *magic,
+void util_update_crc(char *buff, int buff_size, const char *magic,
 		int magic_len)
 {
 	int crc = 0;
@@ -63,8 +73,9 @@ int util_update_crc(char *buff, int buff_size, const char *magic,
 	crc = vdfs4_crc32((unsigned char *)buff + magic_len,
 			buff_size - (CRC32_SIZE + magic_len));
 	memcpy(buff + (buff_size-CRC32_SIZE), &crc, CRC32_SIZE);
-	return crc;
 }
+
+
 
 /**
  * @brief			Validate the buffer crc
@@ -214,7 +225,7 @@ int util_sign_set_bits(char *buff, int buff_size, u_int64_t addr,
 			int_addr = addr  % (datablock_size);
 		else
 			int_addr = 0;
-		length = (datablock_size - int_addr);
+			length = (datablock_size - int_addr);
 		if (count < length)
 			length = count;
 		else
@@ -271,7 +282,7 @@ int util_sign_clear_bits(char *buff, int buff_size, u_int64_t addr,
 			int_addr = addr  % (datablock_size);
 		else
 			int_addr = 0;
-		length = (datablock_size - int_addr);
+			length = (datablock_size - int_addr);
 		if (count < length)
 			length = count;
 		else
@@ -308,15 +319,4 @@ unsigned int slog(int block)
 		if (block & (1 << i))
 			return i;
 	return 0;
-}
-
-unsigned int get_elapsed_time(void)
-{
-	static struct timespec start_time = {0, 0};
-	struct timespec cur_time;
-
-	if (start_time.tv_sec == 0)
-		clock_gettime(CLOCK_REALTIME, &start_time);
-	clock_gettime(CLOCK_REALTIME, &cur_time);
-	return (unsigned int)(cur_time.tv_sec - start_time.tv_sec);
 }

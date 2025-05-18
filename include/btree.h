@@ -23,9 +23,11 @@
 #define BTREE_H_
 
 #include "vdfs4_layout.h"
-#include "vdfs_list.h"
 
+
+#ifndef USER_SPACE
 /* #define CONFIG_VDFS4_DEBUG_GET_BNODE */
+#endif
 
 #ifdef CONFIG_VDFS4_DEBUG_GET_BNODE
 #include <linux/stacktrace.h>
@@ -145,6 +147,10 @@ struct vdfs4_bnode {
 	/* under btree->hash_lock */
 	int ref_count;
 
+#ifdef USER_SPACE
+	int is_dirty;
+#endif
+
 #ifdef CONFIG_VDFS4_DEBUG_GET_BNODE
 	/* under btree->hash_lock */
 	struct list_head get_traces_list;
@@ -203,9 +209,6 @@ struct vdfs4_btree {
 
 	void *split_buff;
 	struct mutex split_buff_lock;
-
-	/* ======== TOOLS ONLY ========= */
-	struct vdfs4_list bnode_list;
 };
 
 /**
@@ -307,6 +310,7 @@ void test_init_new_node_descr(struct vdfs4_bnode *bnode,
 
 int vdfs4_init_btree_caches(void);
 void vdfs4_destroy_btree_caches(void);
+int vdfs4_check_btree_slub_caches_empty(void);
 
 int vdfs4_check_btree_links(struct vdfs4_btree *btree, int *dang_num);
 int vdfs4_check_btree_records_order(struct vdfs4_btree *btree);
@@ -314,11 +318,14 @@ int vdfs4_check_btree_records_order(struct vdfs4_btree *btree);
 
 void vdfs4_init_new_node_descr(struct vdfs4_bnode *bnode,
 		enum vdfs4_node_type type);
-
-/* ======== TOOLS ONLY ========= */
+#ifndef USER_SPACE
+void vdfs4_dump_panic_remount(struct vdfs4_bnode *bnode,
+		const char *fmt, ...);
+int vdfs4_check_and_sign_dirty_bnodes(struct page **page,
+		struct vdfs4_btree *btree, __u64 version);
+#else
 static inline void vdfs4_dump_panic_remount(UNUSED struct vdfs4_bnode *bnode,
 		UNUSED const char *fmt, ...) {};
-void vdfs4_release_bnode_list(struct vdfs4_list *bnode_list);
-u_int32_t btree_get_bitmap_size(struct vdfs4_sb_info *sbi);
+#endif
 
 #endif /* BTREE_H_ */

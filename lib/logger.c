@@ -49,21 +49,12 @@ void set_logger_verbosity(const enum logger_level value)
 	log_level = value;
 }
 
-void log_note(const char *format, ...)
-{
-	va_list argptr;
-
-	va_start(argptr, format);
-	show_log_message("VDFS-NOTE", format, argptr);
-	va_end(argptr);
-}
-
 void log_error(const char *format, ...)
 {
 	va_list argptr;
 
 	va_start(argptr, format);
-	show_log_message("VDFS-ERROR", format, argptr);
+	show_log_message("ERROR", format, argptr);
 	va_end(argptr);
 }
 
@@ -73,7 +64,7 @@ void log_warning(const char *format, ...)
 
 	if (log_level >= LOG_ERRORS_WARNINGS) {
 		va_start(argptr, format);
-		show_log_message("VDFS-WARNING", format, argptr);
+		show_log_message("WARNING", format, argptr);
 		va_end(argptr);
 	}
 }
@@ -84,7 +75,7 @@ void log_info(const char *format, ...)
 
 	if (log_level >= LOG_INFO) {
 		va_start(argptr, format);
-		show_log_message("VDFS-INFO", format, argptr);
+		show_log_message("INFO", format, argptr);
 		va_end(argptr);
 	}
 }
@@ -95,7 +86,7 @@ void log_activity(const char *format, ...)
 
 	if (log_level >= LOG_ACTIVITY) {
 		va_start(argptr, format);
-		show_log_message("VDFS-JOB", format, argptr);
+		show_log_message("+JOB", format, argptr);
 		va_end(argptr);
 	}
 }
