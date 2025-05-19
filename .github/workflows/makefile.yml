@@ -11,7 +11,13 @@ jobs:
     steps:
     
     - name: Install dependencies
-      run: make unit_tests
+      run: make
 
-    - name: Run check
-      run: make all
+    - name: Run mkfs
+      run: make mkfs
+    - name: Run fsck
+      run: make fsck
+    - name: Run tune
+      run: make tune
+    - name: Run unpack
+      run: make unpack
