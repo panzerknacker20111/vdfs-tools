@@ -138,9 +138,9 @@ unpack/unpack.o: unpack/unpack.c /usr/include/stdc-predef.h \
  /usr/include/openssl/obj_mac.h /usr/include/openssl/asn1.h \
  /usr/include/openssl/asn1err.h /usr/include/openssl/objectserr.h \
  include/vdfs_tools.h /usr/include/openssl/rsa.h \
- /usr/include/openssl/rsaerr.h unpack/../include/vdfs4.h \
- include/compress.h include/encrypt.h include/../include/vdfs_tools.h \
- include/vdfs4.h /usr/include/x86_64-linux-gnu/sys/ioctl.h \
+ /usr/include/openssl/rsaerr.h include/vdfs4.h include/compress.h \
+ include/encrypt.h include/../include/vdfs_tools.h include/vdfs4.h \
+ /usr/include/x86_64-linux-gnu/sys/ioctl.h \
  /usr/include/x86_64-linux-gnu/bits/ioctls.h \
  /usr/include/x86_64-linux-gnu/asm/ioctls.h \
  /usr/include/asm-generic/ioctls.h \

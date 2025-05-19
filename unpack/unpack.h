@@ -23,8 +23,8 @@
 #define __UNPACK_H__
 
 #include "../include/vdfs_tools.h"
-#include "../include/vdfs4.h"
-#define SIGNED_DLINK 5 // Use the correct value for your project
+#include <vdfs4.h>
+//#define SIGNED_DLINK 5 // Use the correct value for your project
 /** @brief	A structure used as a base for list of full directories paths
  */
 struct dir_list_item {

@@ -28,7 +28,7 @@
 #include <compress.h>
 #include <sys/sysmacros.h>
 
-static int process_dlink_unpack(struct vdfs4_sb_info *sbi, struct vdfs4_catalog_dlink_record *dlink_value, const char *name);
+
 
 static int create_symlink(struct vdfs4_sb_info *sbi, char *name,
 		struct vdfs4_catalog_file_record *file_rec);
@@ -295,11 +295,7 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 		(struct vdfs4_extended_super_block *)
 		(first_block + 3 * sizeof(struct vdfs4_super_block));
 
-	if ((2 * sizeof(struct vdfs4_super_block)) + sizeof(struct vdfs4_super_block) <= BLOCK_SIZE_DEFAULT) {
-    memcpy(&sbi->sb, sb, sizeof(struct vdfs4_super_block));
-} else {
-    // Handle error, e.g. log and abort
-}
+	memcpy(&sbi->sb, sb, sizeof(struct vdfs4_super_block));
 	memcpy(&sbi->esb, esb, sizeof(struct vdfs4_extended_super_block));
 	sbi->block_size = 1 << sb->log_block_size;
 	sbi->log_blocks_in_leb = sbi->sb.log_super_page_size
@@ -784,7 +780,7 @@ exit:
 */
 
 //static int process_dlink_unpack(struct vdfs4_sb_info *sbi, struct vdfs4_catalog_dlink_record *dlink_value, const char *name);
-
+static int process_dlink_unpack(struct vdfs4_sb_info *sbi, struct vdfs4_catalog_dlink_record *dlink_value, const char *name);
 /**
  * @brief	Creates hardlink at requested path
  * @param[in]	name	String with full path

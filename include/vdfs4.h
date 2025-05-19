@@ -176,7 +176,7 @@ extern unsigned int cattree_prealloc;
 #define HARD_LINK		10
 #define ORPHAN_INODE		12
 #define VDFS4_COMPRESSED_FILE	13
-/* UNUSED:			 			14 */
+#define SIGNED_DLINK		14
 #define VDFS4_AUTH_FILE		15
 #define VDFS4_READ_ONLY_AUTH	16
 #define VDFS4_ENCRYPTED_FILE	17
