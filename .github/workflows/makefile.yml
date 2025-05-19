@@ -10,6 +10,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: clear
+      run: make clean
     - name: Install dependencies
       run: make
 
