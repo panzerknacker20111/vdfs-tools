@@ -36,6 +36,10 @@
 #include <openssl/pem.h>
 #include <openssl/ssl.h>
 #include <openssl/bio.h>
+#include <string.h>
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "vdfs_tools.h"
 #include "compress.h"
@@ -140,31 +144,41 @@ RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
 		rs = RSA_new();
 		if (!rs)
 			goto err_exit;
-		rs->ex_data.dummy = 0;
-		rs->meth->init(rs);
-		rs->n = BN_new();
-		rs->d = BN_new();
-		rs->e = BN_new();
 
-		BN_bin2bn(modulus, RSA_KEY_SIZE, rs->n);
-		BN_bin2bn(private, RSA_KEY_SIZE, rs->d);
-		BN_bin2bn((const unsigned char *)&expon, 3, rs->e);
-		/*Calculate*/
+		// Use local BIGNUMs, then set them with OpenSSL 1.1+ API
+		BIGNUM *n = BN_new();
+		BIGNUM *d = BN_new();
+		BIGNUM *e = BN_new();
+		if (!n || !d || !e)
+			goto err_exit;
+
+		BN_bin2bn(modulus, RSA_KEY_SIZE, n);
+		BN_bin2bn(private, RSA_KEY_SIZE, d);
+		BN_bin2bn((const unsigned char *)&expon, 3, e);
+		if (!RSA_set0_key(rs, n, e, d)) // transfers ownership
+			goto err_exit;
+
+		// n, e, d are now owned by rs
+
+		/* CRT parameters setup */
 		if (q_file && p_file) {
 			BIGNUM *r1 = NULL, *r2 = NULL;
-
+			BIGNUM *p_bn = NULL, *q_bn = NULL, *dmp1 = NULL, *dmq1 = NULL, *iqmp = NULL;
 			unsigned char *p = NULL, *q = NULL;
-
 
 			r1 = BN_CTX_get(ctx);
 			r2 = BN_CTX_get(ctx);
 			if (r2 == NULL || r1 == NULL)
 				goto err1_exit;
-			rs->p = BN_new();
-			rs->q = BN_new();
-			rs->dmp1 = BN_new();
-			rs->dmq1 = BN_new();
-			rs->iqmp = BN_new();
+
+			p_bn = BN_new();
+			q_bn = BN_new();
+			dmp1 = BN_new();
+			dmq1 = BN_new();
+			iqmp = BN_new();
+			if (!p_bn || !q_bn || !dmp1 || !dmq1 || !iqmp)
+				goto err1_exit;
+
 			p = malloc(RSA_KEY_SIZE);
 			q = malloc(RSA_KEY_SIZE);
 			if (!p || !q)
@@ -178,32 +192,44 @@ RSA *create_rsa(char *private_file, char *pub_file, char *q_file, char *p_file)
 			if (ret)
 				goto err1_exit;
 
+			BN_bin2bn(q, RSA_KEY_SIZE, q_bn);
+			BN_bin2bn(p, RSA_KEY_SIZE, p_bn);
 
-			BN_bin2bn(q, RSA_KEY_SIZE, rs->q);
-			BN_bin2bn(p, RSA_KEY_SIZE, rs->p);
-
-			if (!BN_sub(r1, rs->p, BN_value_one()))
+			if (!BN_sub(r1, p_bn, BN_value_one()))
 				goto err1_exit;	/* p-1 */
-			if (!BN_sub(r2, rs->q, BN_value_one()))
+			if (!BN_sub(r2, q_bn, BN_value_one()))
 				goto err1_exit;	/* q-1 */
 
 			/* calculate d mod (p-1) */
-			if (!BN_mod(rs->dmp1, rs->d, r1, ctx))
+			if (!BN_mod(dmp1, d, r1, ctx))
 				goto err1_exit;
 
 			/* calculate d mod (q-1) */
-			if (!BN_mod(rs->dmq1, rs->d, r2, ctx))
+			if (!BN_mod(dmq1, d, r2, ctx))
 				goto err1_exit;
 
 			/* calculate inverse of q mod p */
-			if (!BN_mod_inverse(rs->iqmp, rs->q, rs->p, ctx))
+			if (!BN_mod_inverse(iqmp, q_bn, p_bn, ctx))
 				goto err1_exit;
 
-err1_exit:
+			// Set CRT params using OpenSSL 1.1+ API
+			if (!RSA_set0_factors(rs, p_bn, q_bn)) // transfers ownership
+				goto err1_exit;
+			if (!RSA_set0_crt_params(rs, dmp1, dmq1, iqmp)) // transfers ownership
+				goto err1_exit;
 
+			// p_bn, q_bn, dmp1, dmq1, iqmp are now owned by rs
+			p_bn = q_bn = dmp1 = dmq1 = iqmp = NULL;
+
+err1_exit:
 			free(p);
 			free(q);
-
+			// If error: OpenSSL will free BIGNUMs on RSA_free if set, else free what is not set
+			if (p_bn) BN_free(p_bn);
+			if (q_bn) BN_free(q_bn);
+			if (dmp1) BN_free(dmp1);
+			if (dmq1) BN_free(dmq1);
+			if (iqmp) BN_free(iqmp);
 		}
 err_exit:
 		free(modulus);
@@ -215,14 +241,12 @@ err_exit:
 		rs = PEM_read_RSAPrivateKey(fp, NULL, NULL, NULL);
 		fclose(fp);
 	}
-	if (rs && !(rs->flags & RSA_FLAG_NO_BLINDING))
-		rs->blinding = RSA_setup_blinding(rs, ctx);
+	// (Optional: OpenSSL 1.1+ handles blinding by default)
 	if (ctx != NULL) {
 		BN_CTX_end(ctx);
 		BN_CTX_free(ctx);
 	}
 	return rs;
-
 }
 
 int get_sign_type(RSA *key)
@@ -305,34 +329,64 @@ void encrypted_chunk_align(size_t *cur_align, int align_type)
 	*cur_align = lcm;
 }
 
-void encrypt_chunk(unsigned char *in, unsigned char *out,
-		unsigned char *nonce, AES_KEY *encryption_key, int size, u64 AES_offset)
+/**
+ * EVP-based replacement for AES_ctr128_encrypt
+ */
+static void encrypt_chunk_evp(const unsigned char *in, unsigned char *out,
+		const unsigned char *nonce, const unsigned char *key,
+		int size, u64 AES_offset)
 {
+	EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
 	unsigned char ivec[AES_BLOCK_SIZE];
-	unsigned char ecount[AES_BLOCK_SIZE];
-	unsigned int num;
+	int outlen = 0, tmplen = 0;
 
-	if( encryption_key == NULL || in == NULL || out == NULL || nonce == NULL )
-	{
-		printf("decrypt_chunk() - invalid parameters.\n");
+	if (!ctx) {
+		printf("encrypt_chunk_evp() - failed to allocate EVP_CIPHER_CTX\n");
 		return;
 	}
 
-	memset(ecount, 0, AES_BLOCK_SIZE);
+	// Prepare IV: first VDFS4_AES_NONCE_SIZE bytes from nonce, rest from AES_offset
 	memcpy(ivec, nonce, VDFS4_AES_NONCE_SIZE);
 	memcpy(ivec + VDFS4_AES_NONCE_SIZE, &AES_offset, AES_BLOCK_SIZE - VDFS4_AES_NONCE_SIZE);
 
-	while (size >= AES_BLOCK_SIZE) {
-		num = 0;
-		AES_ctr128_encrypt(in, out, AES_BLOCK_SIZE, encryption_key, ivec, ecount, &num);
-		in +=  AES_BLOCK_SIZE;
-		out += AES_BLOCK_SIZE;
-		size -= AES_BLOCK_SIZE;
+	if (1 != EVP_EncryptInit_ex(ctx, EVP_aes_128_ctr(), NULL, key, ivec)) {
+		printf("encrypt_chunk_evp() - EVP_EncryptInit_ex failed\n");
+		EVP_CIPHER_CTX_free(ctx);
+		return;
 	}
-	if (size > 0) {
-		num = 0;
-		AES_ctr128_encrypt(in, out, size, encryption_key,   ivec, ecount, &num);
+	// Disable padding for CTR mode
+	EVP_CIPHER_CTX_set_padding(ctx, 0);
+
+	if (1 != EVP_EncryptUpdate(ctx, out, &outlen, in, size)) {
+		printf("encrypt_chunk_evp() - EVP_EncryptUpdate failed\n");
+		EVP_CIPHER_CTX_free(ctx);
+		return;
 	}
+	// Finalize encryption (should output 0 bytes for CTR)
+	if (1 != EVP_EncryptFinal_ex(ctx, out + outlen, &tmplen)) {
+		printf("encrypt_chunk_evp() - EVP_EncryptFinal_ex failed\n");
+		EVP_CIPHER_CTX_free(ctx);
+		return;
+	}
+
+	EVP_CIPHER_CTX_free(ctx);
+}
+
+void encrypt_chunk(unsigned char *in, unsigned char *out,
+		unsigned char *nonce, AES_KEY *encryption_key, int size, u64 AES_offset)
+{
+	if( encryption_key == NULL || in == NULL || out == NULL || nonce == NULL )
+	{
+		printf("encrypt_chunk() - invalid parameters.\n");
+		return;
+	}
+
+	// AES_KEY is OpenSSL's struct, but with EVP API, we use the raw key bytes
+	// For AES-128, the key is 16 bytes (128 bits)
+	const unsigned char *key_bytes = (const unsigned char *)encryption_key; // reinterpret as bytes
+
+	// EVP API expects raw key bytes, so cast pointer
+	encrypt_chunk_evp(in, out, nonce, key_bytes, size, AES_offset);
 }
 
 int read_encryption_key(struct vdfs4_sb_info *sbi, char *filename)

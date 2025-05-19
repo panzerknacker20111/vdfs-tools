@@ -36,6 +36,18 @@
 #include <ctype.h>
 
 int processors = 1;
+struct thread_info *thread = NULL;
+struct thread_file_info *thread_file = NULL;
+pthread_cond_t file_finished;
+pthread_mutex_t file_finished_mutex;
+pthread_mutex_t files_count_mutex;
+pthread_mutex_t find_record_mutex;
+pthread_mutex_t	write_file_mutex;
+pthread_mutex_t	thread_free_mutex;
+pthread_cond_t thread_free_cond;
+pthread_mutex_t	thread_file_free_mutex;
+pthread_cond_t thread_file_free_cond;
+
 char *compressor_names[VDFS4_COMPR_NR] = {
 	[VDFS4_COMPR_UNDEF] = NULL,
 	[VDFS4_COMPR_ZLIB] = "zlib",

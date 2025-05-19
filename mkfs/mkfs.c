@@ -37,6 +37,8 @@
 #include <signal.h>
 #include <crypto_lock.h>
 #include <execinfo.h>
+#include <openssl/rsa.h>
+#include <openssl/pem.h>
 
 unsigned int vdfs4_debug_mask = 0
 		/*+ VDFS4_DBG_INO*/
@@ -51,6 +53,23 @@ const unsigned int vdfs_tools_mode = 0
 		/*+ VDFS4_TOOLS_MULTITHREAD*/
 		+ VDFS4_TOOLS_GET_BNODE_FROM_MEM
 		;
+
+static RSA *duplicate_rsa_key(RSA *src)
+{
+    if (!src) return NULL;
+    RSA *dup = NULL;
+    unsigned char *buf = NULL, *p = NULL;
+    int len = i2d_RSAPrivateKey(src, NULL);
+    if (len < 0) return NULL;
+    buf = malloc(len);
+    if (!buf) return NULL;
+    p = buf;
+    i2d_RSAPrivateKey(src, &p);
+    p = buf;
+    dup = d2i_RSAPrivateKey(NULL, (const unsigned char **)&p, len);
+    free(buf);
+    return dup;
+}
 
 void clear_data_range_list(struct list_head *data_range_list)
 {
@@ -846,9 +865,7 @@ void init_threads(struct vdfs4_sb_info *sbi)
 		thread_file[tnum].is_free = 1;
 		thread_file[tnum].ptr = malloc(sizeof(struct install_task));
 		if (sbi->rsa_key) {
-			thread_file[tnum].rsa_copy  = malloc(sizeof(RSA));
-			memcpy(thread_file[tnum].rsa_copy, sbi->rsa_key,
-					sizeof(RSA));
+			thread_file[tnum].rsa_copy = duplicate_rsa_key(sbi->rsa_key);
 			thread[tnum].hash_alg = sbi->hash_alg;
 			thread[tnum].hash_len = sbi->hash_len;
 		}
@@ -905,7 +922,8 @@ void destroy_threads(void)
 			pthread_mutex_unlock(&thread_file[i].compr_file_mutex);
 			pthread_join(thread_file[i].thread_id, NULL);
 			free(thread_file[i].ptr);
-			free(thread_file[i].rsa_copy);
+			if (thread_file[i].rsa_copy)
+				RSA_free(thread_file[i].rsa_copy);
 			free(thread_file[i].compr_temp);
 			free(thread_file[i].uncompr_temp);
 			pthread_cond_destroy(&thread_file[i].compr_file_cond);

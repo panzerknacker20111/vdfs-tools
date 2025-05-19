@@ -20,7 +20,12 @@
  */
 
 #include "fsck.h"
-
+#include "../include/vdfs4_layout.h"
+struct vdfs4_btree *fsck_checked_trees[FSCK_NUM_OF_CHECKED_TREES];
+char *fsck_checked_magics[FSCK_CHECKED_METADATA_ELS];
+int fsck_checked_magics_len[FSCK_CHECKED_METADATA_ELS];
+int fsck_checked_inos[FSCK_CHECKED_METADATA_ELS];
+int fsck_checked_crc_size[FSCK_CHECKED_METADATA_ELS];
 unsigned int vdfs4_debug_mask = 0
 		/*+ VDFS4_DBG_INO*/
 		/*+ VDFS4_DBG_FSM*/

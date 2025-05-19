@@ -27,10 +27,12 @@ HOST=`$(CROSS_COMPILE)gcc -dumpmachine`
 LIBS = -lrt -lpthread
 LIBZ = -lz
 
-OPENSSL_BASE=./openssl
-OPENSSL_DIR=$(OPENSSL_BASE)/openssl-1.0.1g
-OPENSSL_LIB=-L$(OPENSSL_DIR) -lcrypto -ldl
-OPENSSL_PACK=$(OPENSSL_BASE)/openssl-1.0.1g.tar.gz
+
+# Use system OpenSSL, zlib, lzo2 libraries and headers
+OPENSSL_LIB = -lcrypto -ldl
+ZLIB_FILE =
+LZOLIB_FILE =
+LZOLIB_LIB = -llzo2
 
 CFLAGS += -Wall -Wextra -I./include -I./key
 CFLAGS += -DTOOLS_VERSION=\"$(TOOLS_VERSION)\"
@@ -39,6 +41,11 @@ CFLAGS += -DUSER_SPACE
 CFLAGS += -DCONFIG_VDFS4_DEBUG
 CFLAGS += -Iinclude
 CFLAGS += -D_FILE_OFFSET_BITS=64
+
+# Add system include paths for OpenSSL, zlib, lzo2
+CFLAGS += -I/usr/include
+CFLAGS += -I/usr/include/openssl
+CFLAGS += -I/usr/include/lzo
 
 ifdef VDFS4_NO_WARN
 	CFLAGS += -Werror
@@ -55,7 +62,7 @@ ifeq ($(host),x86_64)
 	HOST=x86_64-linux-gnu
 endif
 
-CFLAGS += -I$(OPENSSL_DIR)/include
+CFLAGS += -I$(HOME)/local/include
 
 #Secure flags
 ifeq ($(ENABLE_SECURE_FLAGS),1)
@@ -77,7 +84,6 @@ SOURCE_PAGE_TYPES = $(wildcard ./vm/*.c)
 SOURCE_INFO = $(wildcard ./info/*.c)
 SOURCE_KEY = $(wildcard ./key/*.c)
 
-
 DEPS = $(wildcard ./mkfs/*.d)
 DEPS := $(DEPS) $(wildcard ./unpack/*.d)
 DEPS := $(DEPS) $(wildcard ./fsck/*.d)
@@ -86,26 +92,11 @@ DEPS := $(DEPS) $(wildcard ./tune/*.d)
 DEPS := $(DEPS) $(wildcard ./lib/*.d)
 DEPS := $(DEPS) $(wildcard ./btree_test/*.d)
 DEPS := $(DEPS) $(wildcard ./info/*.d)
-
 DEPS := $(DEPS) $(wildcard ./tune/*.d)
 DEPS := $(DEPS) $(wildcard ./lib/*.d)
 DEPS := $(DEPS) $(wildcard ./vm/*.d)
 DEPS := $(DEPS) $(wildcard ./unit_tests_cunit/*.d)
 DEPS := $(DEPS) $(wildcard ./unit_tests_cunit/mkfs/*.d)
-
-
-ZLIB_BASE = ./zlib
-
-ZLIB_ARCH = $(wildcard $(ZLIB_BASE)/zlib*.tar.gz)
-ZLIB_DIR = $(ZLIB_ARCH:.tar.gz=)
-ZLIB_FILE = $(ZLIB_DIR)/libz.a
-CFLAGS += -I$(ZLIB_DIR)
-LZOLIB_BASE = ./lzolib
-LZOLIB_ARCH = $(wildcard $(LZOLIB_BASE)/lzo*.tar.gz)
-LZOLIB_DIR = $(LZOLIB_ARCH:.tar.gz=)
-LZOLIB_FILE = $(LZOLIB_DIR)/src/.libs/liblzo2.a
-CFLAGS += -I$(LZOLIB_DIR)/include
-CFLAGS += -I$(HOME)/local/include
 
 OBJ_MKFS = $(SOURCE_MKFS:.c=.o)
 OBJ_TUNE = $(SOURCE_TUNE:.c=.o)
@@ -127,53 +118,43 @@ btrtst: CFLAGS += -DCONFIG_VDFS4_DEBUG_TOOLS_GET_BNODE
 
 all: mkfs unpack tune fsck info
 
-openssl: $(OPENSSL_PACK)
-	@if [ ! -d $(OPENSSL_DIR) ]; then tar -xf $(OPENSSL_PACK) -C $(OPENSSL_BASE); cd $(OPENSSL_DIR); ./Configure no-shared no-asm linux-elf --cross-compile-prefix=$(CROSS_COMPILE) $(SECURE_CFLAGS); make build_crypto; fi
-
-zlib: $(ZLIB_ARCH)
-	@if [ ! -d $(ZLIB_DIR) ]; then tar -xf $(ZLIB_ARCH) -C $(ZLIB_BASE); cd $(ZLIB_DIR); env CC=$(CROSS_COMPILE)gcc CFLAGS="$(SECURE_CFLAGS)" ./configure; make; fi
-
-lzo: $(LZO_ARCH)
-	@if [ ! -d $(LZOLIB_DIR) ]; then tar -xf $(LZOLIB_ARCH) -C $(LZOLIB_BASE); cd $(LZOLIB_DIR); env CFLAGS="$(SECURE_CFLAGS)" ./configure --host=$(HOST) --target=$(HOST) -q; make src/liblzo2.la; fi
-
-mkfs: lzo zlib openssl $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY)
-	@$(CC) -g -rdynamic -std=gnu99 -o $(MKFS) $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(SECURE_CFLAGS) $(CFLAGS)
+mkfs: $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY)
+	@$(CC) -g -rdynamic -std=gnu99 -o $(MKFS) $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_KEY) $(LIBS) $(LIBZ) $(LZOLIB_LIB) $(OPENSSL_LIB) $(SECURE_CFLAGS) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-unpack: zlib lzo openssl $(OBJ_LIB) $(OBJ_UNPACK)
-	@$(CC) -o $(UNPACK) $(OBJ_LIB) $(OBJ_UNPACK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
+unpack: $(OBJ_LIB) $(OBJ_UNPACK)
+	@$(CC) -o $(UNPACK) $(OBJ_LIB) $(OBJ_UNPACK) $(LIBS) $(LIBZ) $(LZOLIB_LIB) $(OPENSSL_LIB) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-test: lzo zlib openssl $(OBJ_LIB) $(OBJ_TEST)
-	@$(CC) -o $(TEST) $(OBJ_LIB) $(OBJ_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
+test: $(OBJ_LIB) $(OBJ_TEST)
+	@$(CC) -o $(TEST) $(OBJ_LIB) $(OBJ_TEST) $(LIBZ) $(LZOLIB_LIB) $(OPENSSL_LIB) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-btrtst: lzo zlib openssl $(OBJ_LIB) $(OBJ_BTREE_TEST)
-	@$(CC) -o $(BTREE_TEST) $(OBJ_LIB) $(OBJ_BTREE_TEST) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
+btrtst: $(OBJ_LIB) $(OBJ_BTREE_TEST)
+	@$(CC) -o $(BTREE_TEST) $(OBJ_LIB) $(OBJ_BTREE_TEST) $(LIBZ) $(LZOLIB_LIB) $(OPENSSL_LIB) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-tune: lzo zlib openssl $(OBJ_LIB) $(OBJ_TUNE)
-	@$(CC) -std=gnu99 -o $(TUNE) $(OBJ_LIB) $(OBJ_TUNE) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) $(OPENSSL_LIB) $(CFLAGS)
+tune: $(OBJ_LIB) $(OBJ_TUNE)
+	@$(CC) -std=gnu99 -o $(TUNE) $(OBJ_LIB) $(OBJ_TUNE) $(LIBS) $(LIBZ) $(LZOLIB_LIB) $(OPENSSL_LIB) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-fsck: zlib lzo openssl $(OBJ_LIB) $(OBJ_FSCK)
-	@$(CC) -std=gnu99 -o $(FSCK) $(OBJ_LIB) $(OBJ_FSCK) $(LIBS) $(ZLIB_FILE) $(LZOLIB_FILE) -lm $(OPENSSL_LIB) $(CFLAGS)
+fsck: $(OBJ_LIB) $(OBJ_FSCK)
+	@$(CC) -std=gnu99 -o $(FSCK) $(OBJ_LIB) $(OBJ_FSCK) $(LIBS) $(LIBZ) $(LZOLIB_LIB) -lm $(OPENSSL_LIB) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
 page-types: $(OBJ_PAGE_TYPES)
 	@$(CC) -std=gnu99 -o $(PAGE_TYPES) $(OBJ_PAGE_TYPES) $(CFLAGS)
 	@echo "  CCLD      " $@;
 
-info: openssl $(OBJ_INFO)
+info: $(OBJ_INFO)
 	@$(CC) -std=gnu99 -o $(INFO) $(OBJ_INFO) $(CFLAGS)
 	@echo "  CCLD      " $@;
+
 %.o : %.c
 	@$(CC) $(CFLAGS) -c $< -o $@
 	@echo "  CC        " $@;
 -include $(DEPS)
 
-#%.P: %.c
-	#$(CC) -std=gnu99 -MM $(OBJ_LIB) $(OBJ_MKFS) $(LIBS)
 clean:
 	-rm -f $(OBJ_LIB)
 	-rm -f $(MKFS) $(OBJ_MKFS)
@@ -197,9 +178,6 @@ clean:
 	$(shell rm -f `find -name test_report` > /dev/null 2> /dev/null)
 
 distclean: clean
-	-rm -rf $(ZLIB_DIR)
-	-rm -rf $(LZOLIB_DIR)
-	-rm -rf $(OPENSSL_DIR)
 
 opensource: clean
 	-rm -rf ./fsck ./info ./vdcrc ./tune ./unpack
@@ -209,7 +187,7 @@ unit_tests:
 	$(eval export LFLAGS = -lgcov -coverage $(LFLAGS))
 	make unit_tests_internal
 
-unit_tests_internal: lzo zlib openssl $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_TUNE) $(OBJ_UNPACK)
+unit_tests_internal: $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_TUNE) $(OBJ_UNPACK)
 	$(eval export CURRENT_DIRECTORY = $(shell pwd))
 	$(eval export CFLAGS = -I$(CURRENT_DIRECTORY)/include $(CFLAGS))
 	$(eval export CC HOME LIBS OPENSSL_LIB CPPFLAGS TARGET_ARCH)
@@ -227,4 +205,4 @@ unit_tests_internal: lzo zlib openssl $(OBJ_LIB) $(OBJ_MKFS) $(OBJ_TUNE) $(OBJ_U
 	$(UNITTEST)/count_results.sh
 	gcov $(SOURCE_MKFS) $(SOURCE_UNPACK)  $(SOURCE_TEST) $(SOURCE_BTREE_TEST) $(SOURCE_TUNE)  $(SOURCE_LIB)
 
-.PHONY: all zlib clean mkfs unpack tune fsck openssl lzo info
+.PHONY: all clean distclean opensource mkfs unpack tune fsck info test btrtst unit_tests unit_tests_internal page-types

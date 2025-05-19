@@ -1,0 +1,65 @@
+src/lzo1y_d3.lo: src/lzo1y_d3.c /usr/include/stdc-predef.h src/config1y.h \
+ src/lzo_conf.h include/lzo/lzoconf.h config.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/limits.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/syslimits.h \
+ /usr/include/limits.h \
+ /usr/include/x86_64-linux-gnu/bits/libc-header-start.h \
+ /usr/include/features.h /usr/include/features-time64.h \
+ /usr/include/x86_64-linux-gnu/bits/wordsize.h \
+ /usr/include/x86_64-linux-gnu/bits/timesize.h \
+ /usr/include/x86_64-linux-gnu/sys/cdefs.h \
+ /usr/include/x86_64-linux-gnu/bits/long-double.h \
+ /usr/include/x86_64-linux-gnu/gnu/stubs.h \
+ /usr/include/x86_64-linux-gnu/gnu/stubs-64.h \
+ /usr/include/x86_64-linux-gnu/bits/posix1_lim.h \
+ /usr/include/x86_64-linux-gnu/bits/local_lim.h \
+ /usr/include/linux/limits.h \
+ /usr/include/x86_64-linux-gnu/bits/pthread_stack_min-dynamic.h \
+ /usr/include/x86_64-linux-gnu/bits/pthread_stack_min.h \
+ /usr/include/x86_64-linux-gnu/bits/posix2_lim.h \
+ /usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h include/lzo/lzodefs.h \
+ /usr/include/string.h \
+ /usr/include/x86_64-linux-gnu/bits/types/locale_t.h \
+ /usr/include/x86_64-linux-gnu/bits/types/__locale_t.h \
+ /usr/include/strings.h src/lzo_supp.h /usr/include/assert.h \
+ src/lzo_func.h src/lzo_ptr.h include/lzo/lzo1y.h src/config1x.h \
+ include/lzo/lzo1x.h src/lzo1x_d3.c src/lzo1x_d.ch src/lzo1_d.ch
+/usr/include/stdc-predef.h:
+src/config1y.h:
+src/lzo_conf.h:
+include/lzo/lzoconf.h:
+config.h:
+/usr/lib/gcc/x86_64-linux-gnu/13/include/limits.h:
+/usr/lib/gcc/x86_64-linux-gnu/13/include/syslimits.h:
+/usr/include/limits.h:
+/usr/include/x86_64-linux-gnu/bits/libc-header-start.h:
+/usr/include/features.h:
+/usr/include/features-time64.h:
+/usr/include/x86_64-linux-gnu/bits/wordsize.h:
+/usr/include/x86_64-linux-gnu/bits/timesize.h:
+/usr/include/x86_64-linux-gnu/sys/cdefs.h:
+/usr/include/x86_64-linux-gnu/bits/long-double.h:
+/usr/include/x86_64-linux-gnu/gnu/stubs.h:
+/usr/include/x86_64-linux-gnu/gnu/stubs-64.h:
+/usr/include/x86_64-linux-gnu/bits/posix1_lim.h:
+/usr/include/x86_64-linux-gnu/bits/local_lim.h:
+/usr/include/linux/limits.h:
+/usr/include/x86_64-linux-gnu/bits/pthread_stack_min-dynamic.h:
+/usr/include/x86_64-linux-gnu/bits/pthread_stack_min.h:
+/usr/include/x86_64-linux-gnu/bits/posix2_lim.h:
+/usr/lib/gcc/x86_64-linux-gnu/13/include/stddef.h:
+include/lzo/lzodefs.h:
+/usr/include/string.h:
+/usr/include/x86_64-linux-gnu/bits/types/locale_t.h:
+/usr/include/x86_64-linux-gnu/bits/types/__locale_t.h:
+/usr/include/strings.h:
+src/lzo_supp.h:
+/usr/include/assert.h:
+src/lzo_func.h:
+src/lzo_ptr.h:
+include/lzo/lzo1y.h:
+src/config1x.h:
+include/lzo/lzo1x.h:
+src/lzo1x_d3.c:
+src/lzo1x_d.ch:
+src/lzo1_d.ch:

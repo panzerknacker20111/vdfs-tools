@@ -365,9 +365,39 @@ struct vdfs4_meta_hashtable {
 	__le64 size;
 	__le64 hashtable_offsets[VDFS4_SF_NR];
 };
-
+#define DEBUG_FUNCTION_LINE_LENGTH 5
+#define DEBUG_FUNCTION_NAME_LENGTH 31
 /** END  -<< SNAPSHOT structuries  -----------------------------------------*/
+struct vdfs4_debug_record {
+	/** volume uuid */
+	__le64 uuid;
+	/** line number */
+	__u8 line[DEBUG_FUNCTION_LINE_LENGTH];
+	/** Oops function name */
+	__u8 function[DEBUG_FUNCTION_NAME_LENGTH];
+	/** fail number */
+	__le32 fail_number;
+	/** error code */
+	__le32 error_code;
+	/** record timestamp in jiffies */
+	__le32 fail_time;
+	/** mount count */
+	__le32 mount_count;
+	/** sync count */
+	__le32 sync_count;
+};
 
+/**
+ * @brief	The eMMCFS snapshot descriptor.
+ */
+struct vdfs4_debug_descriptor {
+	/** Signature magic */
+	__u8 signature[4];
+	/* fail count */
+	__le32 record_count;
+	/** next_oops offset */
+	__le32 offset_to_next_record;
+};
 /* it is fixed constants, so we can use only digits here */
 #define IMAGE_CMD_LENGTH (512 - 4 - 4 - 16 - 16 - 12 - 4)
 
@@ -660,7 +690,12 @@ struct vdfs4_catalog_hlink_record {
 	__le16	pad1;
 	__le32	pad2;
 };
-
+struct vdfs4_catalog_dlink_record {
+	struct vdfs4_catalog_folder_record common;
+	__le64 data_inode;
+	__le64 data_offset;
+	__le64 data_length;
+};
 /** START  ->> EXTENTS OVERFLOW BTREE structuries  --------------------------*/
 /** @brief	Extents overflow information.
  */
