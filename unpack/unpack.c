@@ -27,9 +27,12 @@
 #include "unpack.h"
 #include <compress.h>
 #include <sys/sysmacros.h>
+#include <encrypt.h>
 
 
-
+extern int decode_file_old(const char *src_name, int dst_fd,
+		int need_decompress,
+		int *flags);
 static int create_symlink(struct vdfs4_sb_info *sbi, char *name,
 		struct vdfs4_catalog_file_record *file_rec);
 
@@ -252,6 +255,9 @@ int init_sb_info(struct vdfs4_sb_info *sbi)
 	/* check magic number */
 	if (memcmp(sb->signature, VDFS4_SB_SIGNATURE,
 			strlen(VDFS4_SB_SIGNATURE))) {
+		printf("Expected: %s\n", VDFS4_LAYOUT_VERSION);
+		printf("Expected: %s\n", VDFS4_SB_SIGNATURE);
+		printf("Got: %.8s\n", sb->signature);
 		log_error("Wrong superblock magic");
 		free(first_block);
 		return -EINVAL;
@@ -718,7 +724,9 @@ int create_decompress_file(struct vdfs4_sb_info *sbi, char *name,
 		goto close_tmp;
 	}
 
-	ret = decode_file(gathered_name, dst_fd, file_rec, file_rec->common.flags & (1 << VDFS4_COMPRESSED_FILE), &flags);
+	ret = decode_file(gathered_name, dst_fd,
+			file_rec->common.flags & (1 << VDFS4_COMPRESSED_FILE),
+			&flags,0);
 	file_rec->common.flags |= flags;
 
 	close(dst_fd);

@@ -216,7 +216,7 @@ extern const int VDFS4_BTREE_LEAF_NODE_MAGIC;	/* 0x00000002 */
 #define cpu_to_le16(a) htole16(a)
 #define le16_to_cpu(a) le16toh(a)
 #define VDFS4_GET_TABLE(table, x) (struct vdfs4_base_table_record *)(\
-		(char *)table + \
+		(void *)table + \
 		le32_to_cpu(table->translation_table_offsets[VDFS4_SF_INDEX(x)]))
 #define VDFS4_GET_LAST_IBLOCK(table, x) (le32_to_cpu( \
 		table->last_page_index[VDFS4_SF_INDEX(x)]))

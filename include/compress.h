@@ -185,6 +185,9 @@ int encode_file(struct vdfs4_sb_info *sbi, char *src_filename, int dst_fd,
 int decode_file(const char *src_name, int dst_fd,
 		int need_decompress,
 		int *flags, AES_KEY *encryption_key);
+extern int decode_file_old(const char *src_name, int dst_fd,
+		int need_decompress,
+		int *flags);
 int tune_files(struct vdfs4_sb_info *sbi,
 		struct list_head *install_task_list);
 int read_descriptor_info(int fd, struct vdfs4_comp_file_descr *descr,

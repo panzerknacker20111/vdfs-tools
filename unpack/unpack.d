@@ -147,4 +147,4 @@ unpack/unpack.o: unpack/unpack.c /usr/include/stdc-predef.h \
  /usr/include/x86_64-linux-gnu/bits/ioctl-types.h \
  /usr/include/x86_64-linux-gnu/sys/ttydefaults.h \
  /usr/include/x86_64-linux-gnu/sys/sysmacros.h \
- /usr/include/x86_64-linux-gnu/bits/sysmacros.h
+ /usr/include/x86_64-linux-gnu/bits/sysmacros.h include/encrypt.h
